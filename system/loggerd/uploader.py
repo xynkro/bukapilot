@@ -424,7 +424,7 @@ def main(exit_event: threading.Event | None = None) -> None:
 
   backoff = 0.1
   while not exit_event.is_set():
-    sm.update(0)
+    sm.update(100)
 
     # Check memory pressure - skip upload operations if critical
     if is_memory_pressure_critical():
@@ -436,6 +436,20 @@ def main(exit_event: threading.Event | None = None) -> None:
 
     offroad = params.get_bool("IsOffroad")
     network_type = sm['deviceState'].networkType if not force_wifi else NetworkType.wifi
+
+    # If deviceState hasn't delivered a valid sample yet, don't enter long offroad sleep
+    # on the default enum value (none). Retry shortly and wait for valid state.
+    if not force_wifi and network_type == NetworkType.none and not sm.valid['deviceState']:
+      cloudlog.warning("uploader waiting for valid deviceState before network gating "
+                       "net_type=%d valid=%s recv_frame=%d recv_time=%.3f",
+                       int(network_type.raw),
+                       bool(sm.valid['deviceState']),
+                       int(sm.recv_frame['deviceState']),
+                       float(sm.recv_time['deviceState']))
+      if allow_sleep:
+        time.sleep(1)
+      continue
+
     if network_type == NetworkType.none:
       if allow_sleep:
         time.sleep(60 if offroad else 5)
