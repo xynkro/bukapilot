@@ -2,8 +2,8 @@
   {
     "name": "rootfs",
     "url": "https://web.kommu.ai/depot/upload/publicbox/rootfs.simg.xz",
-    "hash": "5cd08df03c0a8de8ede97db9433f3bc26fe1b16f02edd77edbc693382dc3deb4",
-    "hash_raw": "1fceaab38674e3778f35c08c86bc9ba0833aa16a6ffe10a8609e92a86ccb5eb0",
+    "hash": "9ef277b1bbb8b6a7bc8e6ecc6a88f9eaf71b15bbd4ff1b4129f1cbc98c34a3ea",
+    "hash_raw": "77e7c642e98271383e98fa9c3900a82d57e6a6117aa7d991909f5da17a374315",
     "size": 8178892800,
     "sparse": true,
     "full_check": false,
