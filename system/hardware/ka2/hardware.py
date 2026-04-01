@@ -1,10 +1,7 @@
 import hashlib
-import json
 import math
 import os
 import subprocess
-import time
-import tempfile
 from enum import IntEnum
 from functools import cached_property, lru_cache
 from pathlib import Path
@@ -13,7 +10,6 @@ from cereal import log
 from openpilot.common.gpio import gpio_set, gpio_init, get_irqs_for_action
 from openpilot.system.hardware.base import HardwareBase, ThermalConfig, ThermalZone
 from openpilot.system.hardware.ka2 import iwlist
-from openpilot.system.hardware.ka2.pins import GPIO
 
 NM = 'org.freedesktop.NetworkManager'
 NM_CON_ACT = NM + '.Connection.Active'
@@ -60,23 +56,28 @@ NetworkStrength = log.DeviceState.NetworkStrength
 MM_MODEM_ACCESS_TECHNOLOGY_UMTS = 1 << 5
 MM_MODEM_ACCESS_TECHNOLOGY_LTE = 1 << 14
 
-
 def sudo_write(val, path):
+  data = str(val)
   try:
-    with open(path, 'w') as f:
-      f.write(str(val))
+    with open(path, "w") as f:
+      f.write(data)
   except PermissionError:
-    os.system(f"sudo chmod a+w {path}")
-    try:
-      with open(path, 'w') as f:
-        f.write(str(val))
-    except PermissionError:
-      # fallback for debugfs files
-      os.system(f"sudo su -c 'echo {val} > {path}'")
+    if os.system(f"sudo chmod a+w {path}") == 0:
+      try:
+        with open(path, "w") as f:
+          f.write(data)
+        return
+      except PermissionError:
+        os.system(f"sudo sh -c 'echo {data} > {path}'")
+  except Exception:
+    pass
+  finally:
+    # finally ensures the try/except chain always closes properly
+    return
 
 def sudo_read(path: str) -> str:
   try:
-    return subprocess.check_output(f"sudo cat {path}", shell=True, encoding='utf8')
+    return subprocess.run(["sudo", "cat", path], check=True, capture_output=True, text=True).stdout.strip()
   except Exception:
     return ""
 
@@ -132,9 +133,6 @@ class Ka2(HardwareBase):
     # KA2 has no separate SoM power rail sensor (unlike TICI BMS); total draw is from get_current_power_draw
     return 0
 
-  def get_nvme_temperatures(self):
-    return []
-
   def get_screen_brightness(self):
     return 0
 
@@ -149,22 +147,25 @@ class Ka2(HardwareBase):
       primary_connection = self.nm.Get(NM, 'PrimaryConnection', dbus_interface=DBUS_PROPS, timeout=TIMEOUT)
       primary_connection = self.bus.get_object(NM, primary_connection)
       primary_type = primary_connection.Get(NM_CON_ACT, 'Type', dbus_interface=DBUS_PROPS, timeout=TIMEOUT)
+
       if primary_type == '802-3-ethernet':
         return NetworkType.ethernet
       elif primary_type == '802-11-wireless':
         return NetworkType.wifi
-    except Exception:
-      pass
-
-    try:
-      modem = self.get_modem()
-      access_t = modem.Get(MM_MODEM, 'AccessTechnologies', dbus_interface=DBUS_PROPS, timeout=TIMEOUT)
-      if access_t >= MM_MODEM_ACCESS_TECHNOLOGY_LTE:
-        return NetworkType.cell4G
-      elif access_t >= MM_MODEM_ACCESS_TECHNOLOGY_UMTS:
-        return NetworkType.cell3G
       else:
-        return NetworkType.cell2G
+        active_connections = self.nm.Get(NM, 'ActiveConnections', dbus_interface=DBUS_PROPS, timeout=TIMEOUT)
+        for conn in active_connections:
+          c = self.bus.get_object(NM, conn)
+          tp = c.Get(NM_CON_ACT, 'Type', dbus_interface=DBUS_PROPS, timeout=TIMEOUT)
+          if tp == 'gsm':
+            modem = self.get_modem()
+            access_t = modem.Get(MM_MODEM, 'AccessTechnologies', dbus_interface=DBUS_PROPS, timeout=TIMEOUT)
+            if access_t >= MM_MODEM_ACCESS_TECHNOLOGY_LTE:
+              return NetworkType.cell4G
+            elif access_t >= MM_MODEM_ACCESS_TECHNOLOGY_UMTS:
+              return NetworkType.cell3G
+            else:
+              return NetworkType.cell2G
     except Exception:
       pass
 
@@ -206,11 +207,14 @@ class Ka2(HardwareBase):
       }
 
   def get_imei(self, slot):
-    # generate fake 15 digit imei from wlan0 mac address
-    mac = subprocess.getoutput("cat /sys/class/net/wlan0/address")
-    clean_mac = mac.replace(':', '').replace('-', '')
-
-    return hashlib.sha256(clean_mac.encode()).hexdigest()[:15]
+    if slot != 0:
+      return ""
+    try:
+      return self.get_modem().Get(MM_MODEM, "EquipmentIdentifier", dbus_interface=DBUS_PROPS, timeout=TIMEOUT)
+    except:
+      # generate fake 15 digit imei from wlan0 mac address
+      mac = subprocess.getoutput("cat /sys/class/net/wlan0/address")
+      return hashlib.sha256(mac.replace(":", "").replace("-", "").encode()).hexdigest()[:15]
 
   def get_network_info(self):
     try:
@@ -311,7 +315,7 @@ class Ka2(HardwareBase):
     )
     try:
       modem = self.get_modem()
-      return { fn: str(modem.Command(f'AT+QNVFR="{fn}"', math.ceil(timeout), dbus_interface=MM_MODEM, timeout=timeout)) for fn in files}
+      return { fn: modem.Command(f'AT+QNVFR="{fn}"', math.ceil(timeout), dbus_interface=MM_MODEM, timeout=timeout) for fn in files}
     except Exception:
       return None
 
@@ -373,7 +377,6 @@ class Ka2(HardwareBase):
     #camera_irqs = ("cci", "cpas_camnoc", "cpas-cdm", "csid", "ife", "csid-lite", "ife-lite")
     #for n in camera_irqs:
     #  affine_irq(5, n)
-
 
   def get_gpu_usage_percent(self):
     # Mali devfreq exposes load as "percent@freqHz" (e.g. "0@300000000Hz")
