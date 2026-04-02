@@ -18,7 +18,7 @@ from openpilot.system.hardware import HARDWARE
 from opendbc.car.car_helpers import supported_cars
 from openpilot.common.features import Features
 from openpilot.selfdrive.appbridged.ble_helper import BLEBridge, ChunkReceiver
-from system.hardware.ka2.hardware import Ka2
+from openpilot.selfdrive.appbridged.hardware_helper import get_network_type
 
 # BLE Constants
 MESSAGE_HZ = 16 # Expected message rate, must match app visualisation value
@@ -40,17 +40,6 @@ UPDATE_PROCESS = "system.updated.updated"
 HOTSPOT_SERVICE = "wlan1-setup.service"
 SM_UPDATE_INTERVAL = 33 # in ms, the interval where capnp submaster updates
 features = Features()
-KA2 = Ka2()
-NetworkType = log.DeviceState.NetworkType
-NETWORK_TYPES = {
-  NetworkType.none: "Offline",
-  NetworkType.wifi: "Wi-Fi",
-  NetworkType.cell2G: "2G",
-  NetworkType.cell3G: "3G",
-  NetworkType.cell4G: "4G",
-  NetworkType.cell5G: "5G",
-  NetworkType.ethernet: "Ethernet",
-}
 
 # Call functions with cached values only once
 SUPPORTED_CARS = supported_cars()
@@ -296,7 +285,7 @@ class Streamer:
       f"Connecting to\n{attempt_ssid}" if (attempt_ssid := self.wifi_connect_attempt_ssid) else self.active_wlan_ssid
     sett['hotspotEnabled'] = self.hotspot_enabled
     sett['hotspotIp'] = self.hotspot_ip
-    sett['networkType'] = NETWORK_TYPES[KA2.get_network_type()]
+    sett['networkType'] = get_network_type()
     sett['remainingDataUpload'] = f"{int(self.sm['uploaderState'].immediateQueueSize)} MB"
 
     if 0 <= self.send_car_names_cnt < 3:
