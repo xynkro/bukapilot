@@ -3,7 +3,6 @@ import math
 import os
 import subprocess
 import threading
-import time
 from enum import IntEnum
 from functools import cached_property, lru_cache
 from pathlib import Path
@@ -59,26 +58,6 @@ class NMMetered(IntEnum):
 TIMEOUT = 0.1
 REFRESH_RATE_MS = 1000
 
-# Limit repeated D-Bus-heavy getter paths.
-#
-# Behaviour:
-# - first call is always fresh/live
-# - if called slowly enough, continue fetching fresh/live values
-# - if called too frequently, return the last successful real value in between
-# - no fake placeholder values are introduced purely due to rate limiting
-#
-# Why:
-# Repeated aggressive D-Bus usage can trigger or expose native heap corruption
-# bugs in dbus-python / libdbus / GLib stacks, especially under threaded access.
-#
-# Errors like:
-#   malloc(): unaligned fastbin chunk detected
-#
-# usually indicate native allocator metadata corruption (C-level heap corruption),
-# not a normal Python exception. Python itself usually isn't the direct cause, but
-# high-frequency threaded D-Bus traffic can be enough to expose it.
-DBUS_MIN_INTERVAL = 2.0  # 0.5 Hz
-
 NetworkType = log.DeviceState.NetworkType
 NetworkStrength = log.DeviceState.NetworkStrength
 
@@ -126,20 +105,6 @@ class Ka2(HardwareBase):
     self._local.bus_pid = None
     self._lock = threading.RLock()
 
-    # Shared cache for rate-limited D-Bus-backed getters.
-    #
-    # IMPORTANT:
-    # Do NOT cache live D-Bus proxy objects here (modem/wlan/wwan/etc).
-    # Those can become stale if NetworkManager / ModemManager restarts.
-    #
-    # Only cache:
-    # - plain values
-    # - object paths
-    # - dict/list/tuple results
-    # - enums / strings / ints / bools
-    self._dbus_cache = {}
-    self._dbus_cache_lock = threading.Lock()
-
   @property
   def bus(self):
     # Validate process identifier and thread-local state to avoid stale D-Bus handles.
@@ -153,75 +118,34 @@ class Ka2(HardwareBase):
   def nm(self):
     return self.bus.get_object(NM, '/org/freedesktop/NetworkManager')
 
-  @property # this should not be cached, in case the modemmanager restarts
+  @property
   def mm(self):
     return self.bus.get_object(MM, '/org/freedesktop/ModemManager1')
 
-  def _dbus_cached(self, key, fetch_fn):
-    """
-    Shared rate limiter for D-Bus-heavy getters.
-
-    Rules:
-    - first call for a key is always fresh/live
-    - if called too frequently, return the last successful real value
-    - if enough time has passed, fetch fresh/live again
-    - if a refresh fails but an older successful value exists, return the older real value
-    - if the very first fetch fails, let the caller handle fallback behaviour
-    """
-    now = time.monotonic()
-
-    with self._dbus_cache_lock:
-      if (entry := self._dbus_cache.get(key)) is not None:
-        if (now - entry["ts"]) < DBUS_MIN_INTERVAL:
-          return entry["value"]
-
+  def _get_modem_path(self):
     try:
-      value = fetch_fn()
-    except Exception:
-      with self._dbus_cache_lock:
-        if (entry := self._dbus_cache.get(key)) is not None:
-          return entry["value"]
-      raise
-
-    with self._dbus_cache_lock:
-      self._dbus_cache[key] = {
-        "ts": now,
-        "value": value,
-      }
-
-    return value
-
-  def _get_modem_path(self, *, fresh=False):
-    def _fetch():
       objects = self.mm.GetManagedObjects(dbus_interface="org.freedesktop.DBus.ObjectManager", timeout=TIMEOUT)
       if (paths := list(objects.keys())):
         return str(paths[0])
-      return None
-
-    try:
-      return _fetch() if fresh else self._dbus_cached("modem_path", _fetch)
     except Exception:
-      return None
+      pass
+    return None
 
   def _get_wlan_path(self):
-    def _fetch():
-      path = self.nm.GetDeviceByIpIface('wlan0', dbus_interface=NM, timeout=TIMEOUT)
-      return str(path) if path else None
-
     try:
-      return self._dbus_cached("wlan_path", _fetch)
+      if (path := self.nm.GetDeviceByIpIface('wlan0', dbus_interface=NM, timeout=TIMEOUT)):
+        return str(path)
     except Exception:
-      return None
+      pass
+    return None
 
   def _get_wwan_path(self):
-    def _fetch():
-      path = self.nm.GetDeviceByIpIface('wwan0', dbus_interface=NM, timeout=TIMEOUT)
-      return str(path) if path else None
-
     try:
-      return self._dbus_cached("wwan_path", _fetch)
+      if (path := self.nm.GetDeviceByIpIface('wwan0', dbus_interface=NM, timeout=TIMEOUT)):
+        return str(path)
     except Exception:
-      return None
+      pass
+    return None
 
   def get_modem(self):
     try:
@@ -246,40 +170,6 @@ class Ka2(HardwareBase):
     except Exception:
       pass
     return None
-
-  def _get_modem_fresh(self):
-    try:
-      if (path := self._get_modem_path(fresh=True)):
-        return self.bus.get_object(MM, path)
-    except Exception:
-      pass
-    return None
-
-  def _get_sim_info_fresh(self):
-    try:
-      with self._lock:
-        if not (modem := self._get_modem_fresh()): return None
-        sim_path = modem.Get(MM_MODEM, 'Sim', dbus_interface=DBUS_PROPS, timeout=TIMEOUT)
-
-        if sim_path == "/":
-          return {
-            'sim_id': '',
-            'mcc_mnc': None,
-            'network_type': ["Unknown"],
-            'sim_state': ["ABSENT"],
-            'data_connected': False
-          }
-
-        sim = self.bus.get_object(MM, str(sim_path))
-        return {
-          'sim_id': str(sim.Get(MM_SIM, 'SimIdentifier', dbus_interface=DBUS_PROPS, timeout=TIMEOUT)),
-          'mcc_mnc': str(sim.Get(MM_SIM, 'OperatorIdentifier', dbus_interface=DBUS_PROPS, timeout=TIMEOUT)),
-          'network_type': ["Unknown"],
-          'sim_state': ["READY"],
-          'data_connected': modem.Get(MM_MODEM, 'State', dbus_interface=DBUS_PROPS, timeout=TIMEOUT) == MM_MODEM_STATE.CONNECTED,
-        }
-    except Exception:
-      return None
 
   def get_os_version(self):
     with open("/VERSION") as f:
@@ -320,83 +210,67 @@ class Ka2(HardwareBase):
     return subprocess.check_output("grep 'Serial' /proc/cpuinfo | sed 's/.*: //'", shell=True, text=True).strip()
 
   def get_network_type(self):
-    def _fetch():
-      with self._lock:
-        try:
-          if not (p_conn := self.nm.Get(NM, 'PrimaryConnection', dbus_interface=DBUS_PROPS, timeout=TIMEOUT)):
-            return NetworkType.none
+    with self._lock:
+      try:
+        if not (p_conn := self.nm.Get(NM, 'PrimaryConnection', dbus_interface=DBUS_PROPS, timeout=TIMEOUT)):
+          return NetworkType.none
 
-          primary_connection = self.bus.get_object(NM, str(p_conn))
-          primary_type = primary_connection.Get(NM_CON_ACT, 'Type', dbus_interface=DBUS_PROPS, timeout=TIMEOUT)
+        primary_connection = self.bus.get_object(NM, str(p_conn))
+        primary_type = primary_connection.Get(NM_CON_ACT, 'Type', dbus_interface=DBUS_PROPS, timeout=TIMEOUT)
 
-          if primary_type == '802-3-ethernet':
-            return NetworkType.ethernet
-          if primary_type == '802-11-wireless':
-            return NetworkType.wifi
+        if primary_type == '802-3-ethernet':
+          return NetworkType.ethernet
+        if primary_type == '802-11-wireless':
+          return NetworkType.wifi
 
-          active_connections = self.nm.Get(NM, 'ActiveConnections', dbus_interface=DBUS_PROPS, timeout=TIMEOUT)
-          for conn in active_connections:
-            c = self.bus.get_object(NM, str(conn))
-            if c.Get(NM_CON_ACT, 'Type', dbus_interface=DBUS_PROPS, timeout=TIMEOUT) == 'gsm':
-              if (modem := self.get_modem()):
-                access_t = int(modem.Get(MM_MODEM, 'AccessTechnologies', dbus_interface=DBUS_PROPS, timeout=TIMEOUT))
-                if access_t & MM_MODEM_ACCESS_TECHNOLOGY_LTE:
-                  return NetworkType.cell4G
-                if access_t & MM_MODEM_ACCESS_TECHNOLOGY_UMTS:
-                  return NetworkType.cell3G
-                return NetworkType.cell2G
-        except Exception:
-          pass
-      return NetworkType.none
-
-    try:
-      return self._dbus_cached("get_network_type", _fetch)
-    except Exception:
-      return NetworkType.none
+        active_connections = self.nm.Get(NM, 'ActiveConnections', dbus_interface=DBUS_PROPS, timeout=TIMEOUT)
+        for conn in active_connections:
+          c = self.bus.get_object(NM, str(conn))
+          if c.Get(NM_CON_ACT, 'Type', dbus_interface=DBUS_PROPS, timeout=TIMEOUT) == 'gsm':
+            if (modem := self.get_modem()):
+              access_t = int(modem.Get(MM_MODEM, 'AccessTechnologies', dbus_interface=DBUS_PROPS, timeout=TIMEOUT))
+              if access_t & MM_MODEM_ACCESS_TECHNOLOGY_LTE:
+                return NetworkType.cell4G
+              if access_t & MM_MODEM_ACCESS_TECHNOLOGY_UMTS:
+                return NetworkType.cell3G
+              return NetworkType.cell2G
+      except Exception:
+        pass
+    return NetworkType.none
 
   def get_sim_info(self):
-    def _fetch():
-      with self._lock:
-        try:
-          if not (modem := self.get_modem()): return None
-          sim_path = modem.Get(MM_MODEM, 'Sim', dbus_interface=DBUS_PROPS, timeout=TIMEOUT)
+    with self._lock:
+      try:
+        if not (modem := self.get_modem()): return None
+        sim_path = modem.Get(MM_MODEM, 'Sim', dbus_interface=DBUS_PROPS, timeout=TIMEOUT)
 
-          if sim_path == "/":
-            return {
-              'sim_id': '',
-              'mcc_mnc': None,
-              'network_type': ["Unknown"],
-              'sim_state': ["ABSENT"],
-              'data_connected': False
-            }
-
-          sim = self.bus.get_object(MM, str(sim_path))
+        if sim_path == "/":
           return {
-            'sim_id': str(sim.Get(MM_SIM, 'SimIdentifier', dbus_interface=DBUS_PROPS, timeout=TIMEOUT)),
-            'mcc_mnc': str(sim.Get(MM_SIM, 'OperatorIdentifier', dbus_interface=DBUS_PROPS, timeout=TIMEOUT)),
+            'sim_id': '',
+            'mcc_mnc': None,
             'network_type': ["Unknown"],
-            'sim_state': ["READY"],
-            'data_connected': modem.Get(MM_MODEM, 'State', dbus_interface=DBUS_PROPS, timeout=TIMEOUT) == MM_MODEM_STATE.CONNECTED,
+            'sim_state': ["ABSENT"],
+            'data_connected': False
           }
-        except Exception:
-          return None
 
-    try:
-      return self._dbus_cached("get_sim_info", _fetch)
-    except Exception:
-      return None
+        sim = self.bus.get_object(MM, str(sim_path))
+        return {
+          'sim_id': str(sim.Get(MM_SIM, 'SimIdentifier', dbus_interface=DBUS_PROPS, timeout=TIMEOUT)),
+          'mcc_mnc': str(sim.Get(MM_SIM, 'OperatorIdentifier', dbus_interface=DBUS_PROPS, timeout=TIMEOUT)),
+          'network_type': ["Unknown"],
+          'sim_state': ["READY"],
+          'data_connected': modem.Get(MM_MODEM, 'State', dbus_interface=DBUS_PROPS, timeout=TIMEOUT) == MM_MODEM_STATE.CONNECTED,
+        }
+      except Exception:
+        return None
 
   def get_imei(self, slot):
     if slot != 0:
       return ""
     try:
-      def _fetch():
-        with self._lock:
-          if (modem := self.get_modem()):
-            return str(modem.Get(MM_MODEM, "EquipmentIdentifier", dbus_interface=DBUS_PROPS, timeout=TIMEOUT))
-        raise RuntimeError("No modem IMEI available")
-
-      return self._dbus_cached("get_imei_slot0", _fetch)
+      with self._lock:
+        if (modem := self.get_modem()):
+          return str(modem.Get(MM_MODEM, "EquipmentIdentifier", dbus_interface=DBUS_PROPS, timeout=TIMEOUT))
     except Exception:
       pass
     # Generate fake 15 digit imei from wlan0 mac address
@@ -404,33 +278,27 @@ class Ka2(HardwareBase):
     return hashlib.sha256(mac.replace(":", "").replace("-", "").encode()).hexdigest()[:15]
 
   def get_network_info(self):
-    def _fetch():
-      with self._lock:
-        try:
-          if not (modem := self.get_modem()): return None
-          info = modem.Command("AT+QNWINFO", math.ceil(TIMEOUT), dbus_interface=MM_MODEM, timeout=TIMEOUT)
-          extra = modem.Command('AT+QENG="servingcell"', math.ceil(TIMEOUT), dbus_interface=MM_MODEM, timeout=TIMEOUT)
-          state = modem.Get(MM_MODEM, 'State', dbus_interface=DBUS_PROPS, timeout=TIMEOUT)
-        except Exception:
-          return None
+    with self._lock:
+      try:
+        if not (modem := self.get_modem()): return None
+        info = modem.Command("AT+QNWINFO", math.ceil(TIMEOUT), dbus_interface=MM_MODEM, timeout=TIMEOUT)
+        extra = modem.Command('AT+QENG="servingcell"', math.ceil(TIMEOUT), dbus_interface=MM_MODEM, timeout=TIMEOUT)
+        state = modem.Get(MM_MODEM, 'State', dbus_interface=DBUS_PROPS, timeout=TIMEOUT)
+      except Exception:
+        return None
 
-        if info and info.startswith('+QNWINFO: '):
-          info_list = info.replace('+QNWINFO: ', '').replace('"', '').split(',')
-          if len(info_list) == 4:
-            return {
-              'technology': info_list[0],
-              'operator': info_list[1],
-              'band': info_list[2],
-              'channel': int(info_list[3]),
-              'extra': "" if extra is None else extra.replace('+QENG: "servingcell",', '').replace('"', ''),
-              'state': "" if state is None else MM_MODEM_STATE(state).name,
-            }
-      return None
-
-    try:
-      return self._dbus_cached("get_network_info", _fetch)
-    except Exception:
-      return None
+      if info and info.startswith('+QNWINFO: '):
+        info_list = info.replace('+QNWINFO: ', '').replace('"', '').split(',')
+        if len(info_list) == 4:
+          return {
+            'technology': info_list[0],
+            'operator': info_list[1],
+            'band': info_list[2],
+            'channel': int(info_list[3]),
+            'extra': "" if extra is None else extra.replace('+QENG: "servingcell",', '').replace('"', ''),
+            'state': "" if state is None else MM_MODEM_STATE(state).name,
+          }
+    return None
 
   def parse_strength(self, percentage):
     if percentage < 25:
@@ -442,67 +310,49 @@ class Ka2(HardwareBase):
     return NetworkStrength.great
 
   def get_network_strength(self, network_type):
-    def _fetch():
-      network_strength = NetworkStrength.unknown
-      with self._lock:
-        try:
-          if network_type == NetworkType.wifi:
-            if (wlan := self.get_wlan()) and (ap_path := wlan.Get(NM_DEV_WL, 'ActiveAccessPoint', dbus_interface=DBUS_PROPS, timeout=TIMEOUT)) != "/":
-              active_ap = self.bus.get_object(NM, str(ap_path))
-              strength = int(active_ap.Get(NM_AP, 'Strength', dbus_interface=DBUS_PROPS, timeout=TIMEOUT))
-              network_strength = self.parse_strength(strength)
-          elif network_type != NetworkType.none:  # Cellular
-            if (modem := self.get_modem()):
-              strength = int(modem.Get(MM_MODEM, 'SignalQuality', dbus_interface=DBUS_PROPS, timeout=TIMEOUT)[0])
-              network_strength = self.parse_strength(strength)
-        except Exception:
-          pass
-      return network_strength
-
-    try:
-      return self._dbus_cached(f"get_network_strength:{int(network_type)}", _fetch)
-    except Exception:
-      return NetworkStrength.unknown
+    network_strength = NetworkStrength.unknown
+    with self._lock:
+      try:
+        if network_type == NetworkType.wifi:
+          if (wlan := self.get_wlan()) and (ap_path := wlan.Get(NM_DEV_WL, 'ActiveAccessPoint', dbus_interface=DBUS_PROPS, timeout=TIMEOUT)) != "/":
+            active_ap = self.bus.get_object(NM, str(ap_path))
+            strength = int(active_ap.Get(NM_AP, 'Strength', dbus_interface=DBUS_PROPS, timeout=TIMEOUT))
+            network_strength = self.parse_strength(strength)
+        elif network_type != NetworkType.none:  # Cellular
+          if (modem := self.get_modem()):
+            strength = int(modem.Get(MM_MODEM, 'SignalQuality', dbus_interface=DBUS_PROPS, timeout=TIMEOUT)[0])
+            network_strength = self.parse_strength(strength)
+      except Exception:
+        pass
+    return network_strength
 
   def get_network_metered(self, network_type) -> bool:
-    def _fetch():
-      with self._lock:
-        try:
-          if not (p_path := self.nm.Get(NM, 'PrimaryConnection', dbus_interface=DBUS_PROPS, timeout=TIMEOUT)):
-            return super(Ka2, self).get_network_metered(network_type)
+    with self._lock:
+      try:
+        if not (p_path := self.nm.Get(NM, 'PrimaryConnection', dbus_interface=DBUS_PROPS, timeout=TIMEOUT)):
+          return super().get_network_metered(network_type)
 
-          primary_connection = self.bus.get_object(NM, str(p_path))
-          for dev in primary_connection.Get(NM_CON_ACT, 'Devices', dbus_interface=DBUS_PROPS, timeout=TIMEOUT):
-            dev_obj = self.bus.get_object(NM, str(dev))
-            metered_prop = dev_obj.Get(NM_DEV, 'Metered', dbus_interface=DBUS_PROPS, timeout=TIMEOUT)
+        primary_connection = self.bus.get_object(NM, str(p_path))
+        for dev in primary_connection.Get(NM_CON_ACT, 'Devices', dbus_interface=DBUS_PROPS, timeout=TIMEOUT):
+          dev_obj = self.bus.get_object(NM, str(dev))
+          metered_prop = dev_obj.Get(NM_DEV, 'Metered', dbus_interface=DBUS_PROPS, timeout=TIMEOUT)
 
-            if network_type == NetworkType.wifi and metered_prop in [NMMetered.NM_METERED_YES, NMMetered.NM_METERED_GUESS_YES]:
-              return True
-            if network_type in [NetworkType.cell2G, NetworkType.cell3G, NetworkType.cell4G, NetworkType.cell5G] and metered_prop == NMMetered.NM_METERED_NO:
-              return False
-        except Exception:
-          pass
-      return super(Ka2, self).get_network_metered(network_type)
-
-    try:
-      return self._dbus_cached(f"get_network_metered:{int(network_type)}", _fetch)
-    except Exception:
-      return super().get_network_metered(network_type)
+          if network_type == NetworkType.wifi and metered_prop in [NMMetered.NM_METERED_YES, NMMetered.NM_METERED_GUESS_YES]:
+            return True
+          if network_type in [NetworkType.cell2G, NetworkType.cell3G, NetworkType.cell4G, NetworkType.cell5G] and metered_prop == NMMetered.NM_METERED_NO:
+            return False
+      except Exception:
+        pass
+    return super().get_network_metered(network_type)
 
   def get_modem_version(self):
-    def _fetch():
-      with self._lock:
-        try:
-          if (modem := self.get_modem()):
-            return str(modem.Get(MM_MODEM, 'Revision', dbus_interface=DBUS_PROPS, timeout=TIMEOUT))
-        except Exception:
-          pass
-      return None
-
-    try:
-      return self._dbus_cached("get_modem_version", _fetch)
-    except Exception:
-      return None
+    with self._lock:
+      try:
+        if (modem := self.get_modem()):
+          return str(modem.Get(MM_MODEM, 'Revision', dbus_interface=DBUS_PROPS, timeout=TIMEOUT))
+      except Exception:
+        pass
+    return None
 
   def get_modem_nv(self):
     timeout = 0.2  # Default timeout is too short
@@ -511,38 +361,24 @@ class Ka2(HardwareBase):
       '/nv/item_files/ims/IMS_enable',
       '/nv/item_files/modem/mmode/sms_only',
     )
-
-    def _fetch():
-      with self._lock:
-        try:
-          if (modem := self.get_modem()):
-            return {fn: modem.Command(f'AT+QNVFR="{fn}"', math.ceil(timeout), dbus_interface=MM_MODEM, timeout=timeout) for fn in files}
-        except Exception:
-          pass
-      return None
-
-    try:
-      return self._dbus_cached("get_modem_nv", _fetch)
-    except Exception:
-      return None
+    with self._lock:
+      try:
+        if (modem := self.get_modem()):
+          return {fn: modem.Command(f'AT+QNVFR="{fn}"', math.ceil(timeout), dbus_interface=MM_MODEM, timeout=timeout) for fn in files}
+      except Exception:
+        pass
+    return None
 
   def get_modem_temperatures(self):
     timeout = 0.2  # Default timeout is too short
-
-    def _fetch():
-      with self._lock:
-        try:
-          if (modem := self.get_modem()):
-            temps = modem.Command("AT+QTEMP", math.ceil(timeout), dbus_interface=MM_MODEM, timeout=timeout)
-            return list(map(int, temps.split(' ')[1].split(',')))
-        except Exception:
-          pass
-      return []
-
-    try:
-      return self._dbus_cached("get_modem_temperatures", _fetch)
-    except Exception:
-      return []
+    with self._lock:
+      try:
+        if (modem := self.get_modem()):
+          temps = modem.Command("AT+QTEMP", math.ceil(timeout), dbus_interface=MM_MODEM, timeout=timeout)
+          return list(map(int, temps.split(' ')[1].split(',')))
+      except Exception:
+        pass
+    return []
 
   def shutdown(self):
     os.system("sudo poweroff")
@@ -637,14 +473,12 @@ class Ka2(HardwareBase):
 
   def configure_modem(self):
     with self._lock:
-      # Use a fresh direct SIM read here instead of the shared rate-limited getter,
-      # since modem configuration is a startup/control path and should use current state.
-      mcc_mnc = (self._get_sim_info_fresh() or {}).get('mcc_mnc') or ''
+      mcc_mnc = (self.get_sim_info() or {}).get('mcc_mnc') or ''
 
       if os.path.isfile(wwan0_setup := "/usr/kommu/lte/wwan0-setup.sh"):
         os.system(f"bash {wwan0_setup} {mcc_mnc}")
 
-      if (modem := self._get_modem_fresh()):
+      if (modem := self.get_modem()):
         cmds = [
           # Configure modem as data-centric
           'AT+QNVW=5280,0,"0102000000000000"',
@@ -682,26 +516,20 @@ class Ka2(HardwareBase):
     return r
 
   def get_modem_data_usage(self):
-    def _fetch():
-      with self._lock:
-        try:
-          if not (wwan := self.get_wwan()): return -1, -1
+    with self._lock:
+      try:
+        if not (wwan := self.get_wwan()): return -1, -1
 
-          # Ensure refresh rate is set so values do not go stale
-          current_refresh = int(wwan.Get(NM_DEV_STATS, 'RefreshRateMs', dbus_interface=DBUS_PROPS, timeout=TIMEOUT))
-          if current_refresh != REFRESH_RATE_MS:
-            wwan.Set(NM_DEV_STATS, 'RefreshRateMs', dbus.UInt32(REFRESH_RATE_MS), dbus_interface=DBUS_PROPS, timeout=TIMEOUT)
+        # Ensure refresh rate is set so values do not go stale
+        current_refresh = int(wwan.Get(NM_DEV_STATS, 'RefreshRateMs', dbus_interface=DBUS_PROPS, timeout=TIMEOUT))
+        if current_refresh != REFRESH_RATE_MS:
+          wwan.Set(NM_DEV_STATS, 'RefreshRateMs', dbus.UInt32(REFRESH_RATE_MS), dbus_interface=DBUS_PROPS, timeout=TIMEOUT)
 
-          tx = int(wwan.Get(NM_DEV_STATS, 'TxBytes', dbus_interface=DBUS_PROPS, timeout=TIMEOUT))
-          rx = int(wwan.Get(NM_DEV_STATS, 'RxBytes', dbus_interface=DBUS_PROPS, timeout=TIMEOUT))
-          return tx, rx
-        except Exception:
-          return -1, -1
-
-    try:
-      return self._dbus_cached("get_modem_data_usage", _fetch)
-    except Exception:
-      return -1, -1
+        tx = int(wwan.Get(NM_DEV_STATS, 'TxBytes', dbus_interface=DBUS_PROPS, timeout=TIMEOUT))
+        rx = int(wwan.Get(NM_DEV_STATS, 'RxBytes', dbus_interface=DBUS_PROPS, timeout=TIMEOUT))
+        return tx, rx
+      except Exception:
+        return -1, -1
 
   def has_internal_panda(self):
     return True
