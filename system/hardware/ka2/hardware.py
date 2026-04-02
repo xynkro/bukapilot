@@ -2,9 +2,18 @@ import hashlib
 import math
 import os
 import subprocess
+import threading
 from enum import IntEnum
 from functools import cached_property, lru_cache
 from pathlib import Path
+
+# Need to tell the C library to be thread-safe for D-Bus
+import dbus
+import dbus.mainloop.glib
+try:
+  dbus.mainloop.glib.threads_init()
+except Exception:
+  pass
 
 from cereal import log
 from openpilot.common.gpio import gpio_set, gpio_init, get_irqs_for_action
@@ -72,7 +81,6 @@ def sudo_write(val, path):
   except Exception:
     pass
   finally:
-    # finally ensures the try/except chain always closes properly
     return
 
 def sudo_read(path: str) -> str:
@@ -82,8 +90,7 @@ def sudo_read(path: str) -> str:
     return ""
 
 def affine_irq(val, action):
-  irqs = get_irqs_for_action(action)
-  if len(irqs) == 0:
+  if not (irqs := get_irqs_for_action(action)):
     print(f"No IRQs found for '{action}'")
     return
 
@@ -91,12 +98,23 @@ def affine_irq(val, action):
     sudo_write(str(val), f"/proc/irq/{i}/smp_affinity_list")
 
 class Ka2(HardwareBase):
-  @cached_property
-  def bus(self):
-    import dbus
-    return dbus.SystemBus()
+  def __init__(self):
+    super().__init__()
+    # Utilise thread-local storage to provide unique bus connections for each thread.
+    self._local = threading.local()
+    self._local.bus_pid = None
+    self._lock = threading.Lock()
 
-  @cached_property
+  @property
+  def bus(self):
+    # Validate process identifier and thread-local state to avoid stale D-Bus handles.
+    pid = os.getpid()
+    if not hasattr(self._local, 'bus_obj') or self._local.bus_pid != pid:
+      self._local.bus_obj = dbus.SystemBus()
+      self._local.bus_pid = pid
+    return self._local.bus_obj
+
+  @property
   def nm(self):
     return self.bus.get_object(NM, '/org/freedesktop/NetworkManager')
 
@@ -143,168 +161,174 @@ class Ka2(HardwareBase):
     return subprocess.check_output("grep 'Serial' /proc/cpuinfo | sed 's/.*: //'", shell=True, text=True).strip()
 
   def get_network_type(self):
-    try:
-      primary_connection = self.nm.Get(NM, 'PrimaryConnection', dbus_interface=DBUS_PROPS, timeout=TIMEOUT)
-      primary_connection = self.bus.get_object(NM, primary_connection)
-      primary_type = primary_connection.Get(NM_CON_ACT, 'Type', dbus_interface=DBUS_PROPS, timeout=TIMEOUT)
+    with self._lock:
+      try:
+        if not (p_conn := self.nm.Get(NM, 'PrimaryConnection', dbus_interface=DBUS_PROPS, timeout=TIMEOUT)):
+          return NetworkType.none
 
-      if primary_type == '802-3-ethernet':
-        return NetworkType.ethernet
-      elif primary_type == '802-11-wireless':
-        return NetworkType.wifi
-      else:
+        primary_connection = self.bus.get_object(NM, p_conn)
+        primary_type = primary_connection.Get(NM_CON_ACT, 'Type', dbus_interface=DBUS_PROPS, timeout=TIMEOUT)
+
+        if primary_type == '802-3-ethernet':
+          return NetworkType.ethernet
+        if primary_type == '802-11-wireless':
+          return NetworkType.wifi
+
         active_connections = self.nm.Get(NM, 'ActiveConnections', dbus_interface=DBUS_PROPS, timeout=TIMEOUT)
         for conn in active_connections:
           c = self.bus.get_object(NM, conn)
-          tp = c.Get(NM_CON_ACT, 'Type', dbus_interface=DBUS_PROPS, timeout=TIMEOUT)
-          if tp == 'gsm':
-            modem = self.get_modem()
-            access_t = modem.Get(MM_MODEM, 'AccessTechnologies', dbus_interface=DBUS_PROPS, timeout=TIMEOUT)
-            if access_t >= MM_MODEM_ACCESS_TECHNOLOGY_LTE:
-              return NetworkType.cell4G
-            elif access_t >= MM_MODEM_ACCESS_TECHNOLOGY_UMTS:
-              return NetworkType.cell3G
-            else:
+          if c.Get(NM_CON_ACT, 'Type', dbus_interface=DBUS_PROPS, timeout=TIMEOUT) == 'gsm':
+            if (modem := self.get_modem()):
+              access_t = modem.Get(MM_MODEM, 'AccessTechnologies', dbus_interface=DBUS_PROPS, timeout=TIMEOUT)
+              if access_t >= MM_MODEM_ACCESS_TECHNOLOGY_LTE:
+                return NetworkType.cell4G
+              if access_t >= MM_MODEM_ACCESS_TECHNOLOGY_UMTS:
+                return NetworkType.cell3G
               return NetworkType.cell2G
-    except Exception:
-      pass
-
+      except Exception:
+        pass
     return NetworkType.none
 
   def get_modem(self):
-    objects = self.mm.GetManagedObjects(dbus_interface="org.freedesktop.DBus.ObjectManager", timeout=TIMEOUT)
-    modem_path = list(objects.keys())[0]
-    return self.bus.get_object(MM, modem_path)
+    try:
+      objects = self.mm.GetManagedObjects(dbus_interface="org.freedesktop.DBus.ObjectManager", timeout=TIMEOUT)
+      if (paths := list(objects.keys())):
+        return self.bus.get_object(MM, paths[0])
+    except Exception:
+      pass
+    return None
 
   def get_wlan(self):
-    wlan_path = self.nm.GetDeviceByIpIface('wlan0', dbus_interface=NM, timeout=TIMEOUT)
-    return self.bus.get_object(NM, wlan_path)
+    try:
+      if (path := self.nm.GetDeviceByIpIface('wlan0', dbus_interface=NM, timeout=TIMEOUT)):
+        return self.bus.get_object(NM, path)
+    except Exception:
+      pass
+    return None
 
   def get_wwan(self):
-    wwan_path = self.nm.GetDeviceByIpIface('wwan0', dbus_interface=NM, timeout=TIMEOUT)
-    return self.bus.get_object(NM, wwan_path)
+    try:
+      if (path := self.nm.GetDeviceByIpIface('wwan0', dbus_interface=NM, timeout=TIMEOUT)):
+        return self.bus.get_object(NM, path)
+    except Exception:
+      pass
+    return None
 
   def get_sim_info(self):
-    modem = self.get_modem()
-    sim_path = modem.Get(MM_MODEM, 'Sim', dbus_interface=DBUS_PROPS, timeout=TIMEOUT)
+    with self._lock:
+      try:
+        if not (modem := self.get_modem()): return None
+        sim_path = modem.Get(MM_MODEM, 'Sim', dbus_interface=DBUS_PROPS, timeout=TIMEOUT)
 
-    if sim_path == "/":
-      return {
-        'sim_id': '',
-        'mcc_mnc': None,
-        'network_type': ["Unknown"],
-        'sim_state': ["ABSENT"],
-        'data_connected': False
-      }
-    else:
-      sim = self.bus.get_object(MM, sim_path)
-      return {
-        'sim_id': str(sim.Get(MM_SIM, 'SimIdentifier', dbus_interface=DBUS_PROPS, timeout=TIMEOUT)),
-        'mcc_mnc': str(sim.Get(MM_SIM, 'OperatorIdentifier', dbus_interface=DBUS_PROPS, timeout=TIMEOUT)),
-        'network_type': ["Unknown"],
-        'sim_state': ["READY"],
-        'data_connected': modem.Get(MM_MODEM, 'State', dbus_interface=DBUS_PROPS, timeout=TIMEOUT) == MM_MODEM_STATE.CONNECTED,
-      }
+        if sim_path == "/":
+          return {
+            'sim_id': '',
+            'mcc_mnc': None,
+            'network_type': ["Unknown"],
+            'sim_state': ["ABSENT"],
+            'data_connected': False
+          }
+
+        sim = self.bus.get_object(MM, sim_path)
+        return {
+          'sim_id': str(sim.Get(MM_SIM, 'SimIdentifier', dbus_interface=DBUS_PROPS, timeout=TIMEOUT)),
+          'mcc_mnc': str(sim.Get(MM_SIM, 'OperatorIdentifier', dbus_interface=DBUS_PROPS, timeout=TIMEOUT)),
+          'network_type': ["Unknown"],
+          'sim_state': ["READY"],
+          'data_connected': modem.Get(MM_MODEM, 'State', dbus_interface=DBUS_PROPS, timeout=TIMEOUT) == MM_MODEM_STATE.CONNECTED,
+        }
+      except Exception:
+        return None
 
   def get_imei(self, slot):
     if slot != 0:
       return ""
     try:
-      return self.get_modem().Get(MM_MODEM, "EquipmentIdentifier", dbus_interface=DBUS_PROPS, timeout=TIMEOUT)
-    except:
-      # generate fake 15 digit imei from wlan0 mac address
-      mac = subprocess.getoutput("cat /sys/class/net/wlan0/address")
-      return hashlib.sha256(mac.replace(":", "").replace("-", "").encode()).hexdigest()[:15]
+      with self._lock:
+        if (modem := self.get_modem()):
+          return modem.Get(MM_MODEM, "EquipmentIdentifier", dbus_interface=DBUS_PROPS, timeout=TIMEOUT)
+    except Exception:
+      pass
+    # Generate fake 15 digit imei from wlan0 mac address
+    mac = subprocess.getoutput("cat /sys/class/net/wlan0/address")
+    return hashlib.sha256(mac.replace(":", "").replace("-", "").encode()).hexdigest()[:15]
 
   def get_network_info(self):
-    try:
-      modem = self.get_modem()
-      info = modem.Command("AT+QNWINFO", math.ceil(TIMEOUT), dbus_interface=MM_MODEM, timeout=TIMEOUT)
-      extra = modem.Command('AT+QENG="servingcell"', math.ceil(TIMEOUT), dbus_interface=MM_MODEM, timeout=TIMEOUT)
-      state = modem.Get(MM_MODEM, 'State', dbus_interface=DBUS_PROPS, timeout=TIMEOUT)
-    except Exception:
-      return None
-
-    if info and info.startswith('+QNWINFO: '):
-      info = info.replace('+QNWINFO: ', '').replace('"', '').split(',')
-      extra = "" if extra is None else extra.replace('+QENG: "servingcell",', '').replace('"', '')
-      state = "" if state is None else MM_MODEM_STATE(state).name
-
-      if len(info) != 4:
+    with self._lock:
+      try:
+        if not (modem := self.get_modem()): return None
+        info = modem.Command("AT+QNWINFO", math.ceil(TIMEOUT), dbus_interface=MM_MODEM, timeout=TIMEOUT)
+        extra = modem.Command('AT+QENG="servingcell"', math.ceil(TIMEOUT), dbus_interface=MM_MODEM, timeout=TIMEOUT)
+        state = modem.Get(MM_MODEM, 'State', dbus_interface=DBUS_PROPS, timeout=TIMEOUT)
+      except Exception:
         return None
 
-      technology, operator, band, channel = info
-
-      return({
-        'technology': technology,
-        'operator': operator,
-        'band': band,
-        'channel': int(channel),
-        'extra': extra,
-        'state': state,
-      })
-    else:
-      return None
+      if info and info.startswith('+QNWINFO: '):
+        info_list = info.replace('+QNWINFO: ', '').replace('"', '').split(',')
+        if len(info_list) == 4:
+          return {
+            'technology': info_list[0],
+            'operator': info_list[1],
+            'band': info_list[2],
+            'channel': int(info_list[3]),
+            'extra': "" if extra is None else extra.replace('+QENG: "servingcell",', '').replace('"', ''),
+            'state': "" if state is None else MM_MODEM_STATE(state).name,
+          }
+    return None
 
   def parse_strength(self, percentage):
     if percentage < 25:
       return NetworkStrength.poor
-    elif percentage < 50:
+    if percentage < 50:
       return NetworkStrength.moderate
-    elif percentage < 75:
+    if percentage < 75:
       return NetworkStrength.good
-    else:
-      return NetworkStrength.great
+    return NetworkStrength.great
 
   def get_network_strength(self, network_type):
     network_strength = NetworkStrength.unknown
-
-    try:
-      if network_type == NetworkType.none:
+    with self._lock:
+      try:
+        if network_type == NetworkType.wifi:
+          if (wlan := self.get_wlan()) and (ap_path := wlan.Get(NM_DEV_WL, 'ActiveAccessPoint', dbus_interface=DBUS_PROPS, timeout=TIMEOUT)) != "/":
+            active_ap = self.bus.get_object(NM, ap_path)
+            strength = int(active_ap.Get(NM_AP, 'Strength', dbus_interface=DBUS_PROPS, timeout=TIMEOUT))
+            network_strength = self.parse_strength(strength)
+        elif network_type != NetworkType.none:  # Cellular
+          if (modem := self.get_modem()):
+            strength = int(modem.Get(MM_MODEM, 'SignalQuality', dbus_interface=DBUS_PROPS, timeout=TIMEOUT)[0])
+            network_strength = self.parse_strength(strength)
+      except Exception:
         pass
-      elif network_type == NetworkType.wifi:
-        wlan = self.get_wlan()
-        active_ap_path = wlan.Get(NM_DEV_WL, 'ActiveAccessPoint', dbus_interface=DBUS_PROPS, timeout=TIMEOUT)
-        if active_ap_path != "/":
-          active_ap = self.bus.get_object(NM, active_ap_path)
-          strength = int(active_ap.Get(NM_AP, 'Strength', dbus_interface=DBUS_PROPS, timeout=TIMEOUT))
-          network_strength = self.parse_strength(strength)
-      else:  # Cellular
-        modem = self.get_modem()
-        strength = int(modem.Get(MM_MODEM, 'SignalQuality', dbus_interface=DBUS_PROPS, timeout=TIMEOUT)[0])
-        network_strength = self.parse_strength(strength)
-    except Exception:
-      pass
-
     return network_strength
 
   def get_network_metered(self, network_type) -> bool:
-    try:
-      primary_connection = self.nm.Get(NM, 'PrimaryConnection', dbus_interface=DBUS_PROPS, timeout=TIMEOUT)
-      primary_connection = self.bus.get_object(NM, primary_connection)
-      primary_devices = primary_connection.Get(NM_CON_ACT, 'Devices', dbus_interface=DBUS_PROPS, timeout=TIMEOUT)
+    with self._lock:
+      try:
+        if not (p_path := self.nm.Get(NM, 'PrimaryConnection', dbus_interface=DBUS_PROPS, timeout=TIMEOUT)):
+          return super().get_network_metered(network_type)
 
-      for dev in primary_devices:
-        dev_obj = self.bus.get_object(NM, str(dev))
-        metered_prop = dev_obj.Get(NM_DEV, 'Metered', dbus_interface=DBUS_PROPS, timeout=TIMEOUT)
+        primary_connection = self.bus.get_object(NM, p_path)
+        for dev in primary_connection.Get(NM_CON_ACT, 'Devices', dbus_interface=DBUS_PROPS, timeout=TIMEOUT):
+          dev_obj = self.bus.get_object(NM, str(dev))
+          metered_prop = dev_obj.Get(NM_DEV, 'Metered', dbus_interface=DBUS_PROPS, timeout=TIMEOUT)
 
-        if network_type == NetworkType.wifi:
-          if metered_prop in [NMMetered.NM_METERED_YES, NMMetered.NM_METERED_GUESS_YES]:
+          if network_type == NetworkType.wifi and metered_prop in [NMMetered.NM_METERED_YES, NMMetered.NM_METERED_GUESS_YES]:
             return True
-        elif network_type in [NetworkType.cell2G, NetworkType.cell3G, NetworkType.cell4G, NetworkType.cell5G]:
-          if metered_prop == NMMetered.NM_METERED_NO:
+          if network_type in [NetworkType.cell2G, NetworkType.cell3G, NetworkType.cell4G, NetworkType.cell5G] and metered_prop == NMMetered.NM_METERED_NO:
             return False
-    except Exception:
-      pass
-
+      except Exception:
+        pass
     return super().get_network_metered(network_type)
 
   def get_modem_version(self):
-    try:
-      modem = self.get_modem()
-      return modem.Get(MM_MODEM, 'Revision', dbus_interface=DBUS_PROPS, timeout=TIMEOUT)
-    except Exception:
-      return None
+    with self._lock:
+      try:
+        if (modem := self.get_modem()):
+          return modem.Get(MM_MODEM, 'Revision', dbus_interface=DBUS_PROPS, timeout=TIMEOUT)
+      except Exception:
+        pass
+    return None
 
   def get_modem_nv(self):
     timeout = 0.2  # Default timeout is too short
@@ -313,20 +337,24 @@ class Ka2(HardwareBase):
       '/nv/item_files/ims/IMS_enable',
       '/nv/item_files/modem/mmode/sms_only',
     )
-    try:
-      modem = self.get_modem()
-      return { fn: modem.Command(f'AT+QNVFR="{fn}"', math.ceil(timeout), dbus_interface=MM_MODEM, timeout=timeout) for fn in files}
-    except Exception:
-      return None
+    with self._lock:
+      try:
+        if (modem := self.get_modem()):
+          return { fn: modem.Command(f'AT+QNVFR="{fn}"', math.ceil(timeout), dbus_interface=MM_MODEM, timeout=timeout) for fn in files}
+      except Exception:
+        pass
+    return None
 
   def get_modem_temperatures(self):
     timeout = 0.2  # Default timeout is too short
-    try:
-      modem = self.get_modem()
-      temps = modem.Command("AT+QTEMP", math.ceil(timeout), dbus_interface=MM_MODEM, timeout=timeout)
-      return list(map(int, temps.split(' ')[1].split(',')))
-    except Exception:
-      return []
+    with self._lock:
+      try:
+        if (modem := self.get_modem()):
+          temps = modem.Command("AT+QTEMP", math.ceil(timeout), dbus_interface=MM_MODEM, timeout=timeout)
+          return list(map(int, temps.split(' ')[1].split(',')))
+      except Exception:
+        pass
+    return []
 
   def shutdown(self):
     os.system("sudo poweroff")
@@ -342,14 +370,12 @@ class Ka2(HardwareBase):
   def set_power_save(self, powersave_enabled):
     # *** CPU config ***
 
-    # offline big cluster, leave core 4 online for boardd
+    # Offline big cluster, leave core 4 online for boardd
     for i in range(5, 8):
-      val = '0' if powersave_enabled else '1'
-      sudo_write(val, f'/sys/devices/system/cpu/cpu{i}/online')
+      sudo_write('0' if powersave_enabled else '1', f'/sys/devices/system/cpu/cpu{i}/online')
 
     for n in ('0', '4'):
-      gov = 'ondemand' if powersave_enabled else 'performance'
-      sudo_write(gov, f'/sys/devices/system/cpu/cpufreq/policy{n}/scaling_governor')
+      sudo_write('ondemand' if powersave_enabled else 'performance', f'/sys/devices/system/cpu/cpufreq/policy{n}/scaling_governor')
 
     # *** GPU (Mali): 300 MHz + simple_ondemand in power save, else 1000 MHz + performance ***
     _gpu_devfreq = "/sys/class/devfreq/fb000000.gpu"
@@ -365,10 +391,10 @@ class Ka2(HardwareBase):
     pass
 
     # boardd core
-    #affine_irq(4, "spi_geni")         # SPI
-    #affine_irq(4, "xhci-hcd:usb3")    # aux panda USB (or potentially anything else on USB)
+    #affine_irq(4, "spi_geni")          # SPI
+    #affine_irq(4, "xhci-hcd:usb3")     # aux panda USB (or potentially anything else on USB)
     #if "tici" in self.get_device_type():
-    #  affine_irq(4, "xhci-hcd:usb1")  # internal panda USB (also modem)
+    #  affine_irq(4, "xhci-hcd:usb1")   # internal panda USB (also modem)
 
     # GPU
     #affine_irq(5, "kgsl-3d0")
@@ -383,18 +409,17 @@ class Ka2(HardwareBase):
     try:
       with open("/sys/class/devfreq/fb000000.gpu/load", "r") as f:
         s = f.read().strip()
-      if "@" in s:
-        return int(float(s.split("@")[0]))
-      return int(float(s))
+      return int(float(s.split("@")[0])) if "@" in s else int(float(s))
     except Exception:
       return 0
 
   def get_npu_usage_percent(self):
     try:
-      npu_load = sudo_read("/sys/kernel/debug/rknpu/load")
-      return [int(x.split('%')[0]) for x in npu_load.split() if '%' in x]
+      if (npu_load := sudo_read("/sys/kernel/debug/rknpu/load")):
+        return [int(x.split('%')[0]) for x in npu_load.split() if '%' in x]
     except Exception:
-      return [0, 0, 0]
+      pass
+    return [0, 0, 0]
 
   def initialize_hardware(self):
     # Allow thermald to write engagement status to kmsg
@@ -406,15 +431,15 @@ class Ka2(HardwareBase):
 
     # *** IRQ config ***
 
-    # mask off big cluster from default affinity
+    # Mask off big cluster from default affinity
     sudo_write("f", "/proc/irq/default_smp_affinity")
 
-    # move these off the default core
+    # Move these off the default core
     #affine_irq(1, "msm_drm")   # display
     #affine_irq(1, "msm_vidc")  # encoders
     #affine_irq(1, "i2c_geni")  # sensors
 
-    # setup cpu, ddr and npu governors
+    # Initialise cpu, ddr and npu governors
     # TODO see if cpu and ddr needed
     sudo_write("userspace", "/sys/class/devfreq/fdab0000.npu/governor")
     sudo_write("1000000000", "/sys/class/devfreq/fdab0000.npu/userspace/set_freq")
@@ -423,88 +448,68 @@ class Ka2(HardwareBase):
     sudo_write("2112000000", "/sys/class/devfreq/dmc/userspace/set_freq")
 
   def configure_modem(self):
-    sim_info = self.get_sim_info()
-    sim_id = sim_info.get('sim_id') or ''
-    mcc_mnc = sim_info.get('mcc_mnc') or ''
+    with self._lock:
+      mcc_mnc = (self.get_sim_info() or {}).get('mcc_mnc') or ''
 
-    modem = self.get_modem()
-    try:
-      manufacturer = str(modem.Get(MM_MODEM, 'Manufacturer', dbus_interface=DBUS_PROPS, timeout=TIMEOUT))
-    except Exception:
-      manufacturer = None
+      if os.path.isfile(wwan0_setup := "/usr/kommu/lte/wwan0-setup.sh"):
+        os.system(f"bash {wwan0_setup} {mcc_mnc}")
 
-    wwan0_setup = "/usr/kommu/lte/wwan0-setup.sh"
-    if os.path.isfile(wwan0_setup):
-      os.system(f"bash {wwan0_setup} {mcc_mnc}")
+      if (modem := self.get_modem()):
+        cmds = [
+          # Configure modem as data-centric
+          'AT+QNVW=5280,0,"0102000000000000"',
+          'AT+QNVFW="/nv/item_files/ims/IMS_enable",00',
+          'AT+QNVFW="/nv/item_files/modem/mmode/ue_usage_setting",01',
+        ]
 
-    cmds = [
-      # configure modem as data-centric
-      'AT+QNVW=5280,0,"0102000000000000"',
-      'AT+QNVFW="/nv/item_files/ims/IMS_enable",00',
-      'AT+QNVFW="/nv/item_files/modem/mmode/ue_usage_setting",01',
-    ]
+        for cmd in cmds:
+          try:
+            modem.Command(cmd, math.ceil(TIMEOUT), dbus_interface=MM_MODEM, timeout=TIMEOUT)
+          except Exception:
+            pass
 
-    for cmd in cmds:
-      try:
-        modem.Command(cmd, math.ceil(TIMEOUT), dbus_interface=MM_MODEM, timeout=TIMEOUT)
-      except Exception:
-        pass
-
-    try:
-      # fallback: directly remove default route if modem connects with one
+      # Fallback: directly remove default route if modem connects with one
       os.system("sudo ip route del default dev wwan0 2>/dev/null || true")
-    except Exception:
-      pass
 
   def get_networks(self):
     r = {}
 
-    wlan = iwlist.scan()
-    if wlan is not None:
+    if (wlan := iwlist.scan()) is not None:
       r['wlan'] = wlan
 
-    lte_info = self.get_network_info()
-    if lte_info is not None:
-      extra = lte_info['extra']
-
-      # <state>,"LTE",<is_tdd>,<mcc>,<mnc>,<cellid>,<pcid>,<earfcn>,<freq_band_ind>,
-      # <ul_bandwidth>,<dl_bandwidth>,<tac>,<rsrp>,<rsrq>,<rssi>,<sinr>,<srxlev>
-      if 'LTE' in extra:
-        extra = extra.split(',')
-        try:
-          r['lte'] = [{
-            "mcc": int(extra[3]),
-            "mnc": int(extra[4]),
-            "cid": int(extra[5], 16),
-            "nmr": [{"pci": int(extra[6]), "earfcn": int(extra[7])}],
-          }]
-        except (ValueError, IndexError):
-          pass
+    if (lte := self.get_network_info()) and 'LTE' in (ex := lte['extra']):
+      ex_list = ex.split(',')
+      try:
+        r['lte'] = [{
+          "mcc": int(ex_list[3]),
+          "mnc": int(ex_list[4]),
+          "cid": int(ex_list[5], 16),
+          "nmr": [{"pci": int(ex_list[6]), "earfcn": int(ex_list[7])}],
+        }]
+      except (ValueError, IndexError):
+        pass
 
     return r
 
   def get_modem_data_usage(self):
-    try:
-      wwan = self.get_wwan()
+    with self._lock:
+      try:
+        if not (wwan := self.get_wwan()): return -1, -1
 
-      # Ensure refresh rate is set so values don't go stale
-      refresh_rate = wwan.Get(NM_DEV_STATS, 'RefreshRateMs', dbus_interface=DBUS_PROPS, timeout=TIMEOUT)
-      if refresh_rate != REFRESH_RATE_MS:
-        u = type(refresh_rate)
-        wwan.Set(NM_DEV_STATS, 'RefreshRateMs', u(REFRESH_RATE_MS), dbus_interface=DBUS_PROPS, timeout=TIMEOUT)
+        # Ensure refresh rate is set so values do not go stale
+        if wwan.Get(NM_DEV_STATS, 'RefreshRateMs', dbus_interface=DBUS_PROPS, timeout=TIMEOUT) != REFRESH_RATE_MS:
+          wwan.Set(NM_DEV_STATS, 'RefreshRateMs', dbus.UInt32(REFRESH_RATE_MS), dbus_interface=DBUS_PROPS, timeout=TIMEOUT)
 
-      tx = wwan.Get(NM_DEV_STATS, 'TxBytes', dbus_interface=DBUS_PROPS, timeout=TIMEOUT)
-      rx = wwan.Get(NM_DEV_STATS, 'RxBytes', dbus_interface=DBUS_PROPS, timeout=TIMEOUT)
-      return int(tx), int(rx)
-    except Exception:
-      return -1, -1
+        return int(wwan.Get(NM_DEV_STATS, 'TxBytes', dbus_interface=DBUS_PROPS, timeout=TIMEOUT)), \
+               int(wwan.Get(NM_DEV_STATS, 'RxBytes', dbus_interface=DBUS_PROPS, timeout=TIMEOUT))
+      except Exception:
+        return -1, -1
 
   def has_internal_panda(self):
     return True
 
   def reset_internal_panda(self):
     #gpio_init(GPIO.STM_RST_N, True)
-
     #gpio_set(GPIO.STM_RST_N, 1)
     #time.sleep(1)
     #gpio_set(GPIO.STM_RST_N, 0)
@@ -513,7 +518,6 @@ class Ka2(HardwareBase):
   def recover_internal_panda(self):
     #gpio_init(GPIO.STM_RST_N, True)
     #gpio_init(GPIO.STM_BOOT0, True)
-
     #gpio_set(GPIO.STM_RST_N, 1)
     #gpio_set(GPIO.STM_BOOT0, 1)
     #time.sleep(0.5)
