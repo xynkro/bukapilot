@@ -18,7 +18,7 @@ from openpilot.system.hardware import HARDWARE
 from opendbc.car.car_helpers import supported_cars
 from openpilot.common.features import Features
 from openpilot.selfdrive.appbridged.ble_helper import BLEBridge, ChunkReceiver
-from openpilot.selfdrive.appbridged.hardware_helper import get_network_type
+from openpilot.selfdrive.appbridged.hardware_helper import get_network_type, get_sim_status
 
 # BLE Constants
 MESSAGE_HZ = 16 # Expected message rate, must match app visualisation value
@@ -286,6 +286,7 @@ class Streamer:
     sett['hotspotEnabled'] = self.hotspot_enabled
     sett['hotspotIp'] = self.hotspot_ip
     sett['networkType'] = get_network_type()
+    sett['simStatus'] = get_sim_status()
     sett['remainingDataUpload'] = f"{int(self.sm['uploaderState'].immediateQueueSize)} MB"
 
     if 0 <= self.send_car_names_cnt < 3:
