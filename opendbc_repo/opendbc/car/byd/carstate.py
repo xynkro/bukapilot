@@ -66,7 +66,7 @@ class CarState(CarStateBase):
     self.pt5 = cp_cam.vl["LKAS_HUD_ADAS"]["PT5"]
     self.lkas_hud_status_passthrough = pack_lkas_hud_status_passthrough(self.abh, self.passthrough)
     self.lkas_healthy = cp_cam.vl["STEERING_MODULE_ADAS"]["EPS_OK"]
-    ret.lkaDisabled = not self.lka_on
+    ret.lkaDisabled = (self.CP.carFingerprint == CAR.BYD_ATTO3) and (not self.lka_on)
 
     ret.brakeHoldActive = False
 
