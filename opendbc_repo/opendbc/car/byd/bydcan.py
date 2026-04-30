@@ -113,10 +113,10 @@ def create_lkas_hud(packer, lat_active, lss_state, lss_alert, tsr,
     "HAND_ON_WHEEL_WARNING": bool(hand_on_wheel_warning),
     "TSR": tsr,
     "HMA": hma,
-    "PT2": pt2,
-    "PT3": pt3,
-    "PT4": pt4,
-    "PT5": pt5,
+    "PT2": 0,
+    "PT3": 0,
+    "PT4": 0,
+    "PT5": 0,
   }
 
   return packer.make_can_msg("LKAS_HUD_ADAS", 0, values)
