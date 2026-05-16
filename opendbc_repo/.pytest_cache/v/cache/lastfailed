@@ -1,0 +1,4 @@
+{
+  "opendbc/car/tests/test_docs.py::TestCarDocs::test_year_format": true,
+  "opendbc/safety/tests/test_cherry.py::TestCherrySafety::test_lane_keep_tx_whitelist": true
+}
