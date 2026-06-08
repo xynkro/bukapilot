@@ -87,3 +87,4 @@ void stop_thumbnail_worker();
 void enqueue_thumbnail(const CameraBuf *buf);
 
 extern ExitHandler do_exit;
+extern int camerad_cycle_count;

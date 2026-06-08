@@ -82,7 +82,7 @@ for cycle in range(1, MAX_CYCLES + 1):
   set_gov("performance")
   time.sleep(2.0)  # Allow hardwared to detect ignition and transition to onroad
 
-  env = {**os.environ, "KA2_BURN_IN_DURATION_S": str(ONROAD + 30)}
+  env = {**os.environ, "KA2_BURN_IN_DURATION_S": str(ONROAD + 30), "DEBUG_CAMERA": "1"}
   test_proc = subprocess.Popen(
     [sys.executable, "selfdrive/test/test_ka2_onroad.py", "--can-replay", "--burn-in-test"],
     cwd=BASEDIR, env=env, preexec_fn=os.setsid

@@ -24,6 +24,8 @@
 
 ExitHandler do_exit;
 
+extern int camerad_cycle_count;
+int camerad_cycle_count = 0;
 static const int env_queue_depth = getenv("CAMERAD_QUEUE_DEPTH") ? std::max(1, atoi(getenv("CAMERAD_QUEUE_DEPTH"))) : 2;
 
 struct ThumbnailJob {
@@ -131,6 +133,15 @@ void CameraBuf::sendFrameToVipc() {
     cur_yuv_buf = cur_camera_buf;
   } else {
     cur_yuv_buf = vipc_server->get_buffer(stream_type);
+    if (!cur_yuv_buf) {
+      static int vipc_drop_count = 0;
+      vipc_drop_count++;
+      if (vipc_drop_count <= 5) {
+        LOGE("sendFrameToVipc: vipc_server->get_buffer returned NULL (zerocopy=%d stream=%d) drops=%d",
+             use_external_zerocopy, stream_type, vipc_drop_count);
+      }
+      return;
+    }
     memcpy(cur_yuv_buf->addr, cur_camera_buf->addr, nv12_frame_size);
   }
 
@@ -326,6 +337,7 @@ void *processing_thread(MultiCameraState *cameras, CameraState *cs, process_thre
   util::set_thread_name(thread_name);
 
   uint32_t cnt = 0;
+  uint32_t last_log_cnt = 0;
   while (!do_exit) {
     if (!cs->buf.acquire()) continue;
 
@@ -334,8 +346,14 @@ void *processing_thread(MultiCameraState *cameras, CameraState *cs, process_thre
     if (cs == &(cameras->road_cam) && cameras->pm && cnt % 100 == 3) {
       enqueue_thumbnail(&(cs->buf));
     }
+    if (cnt - last_log_cnt >= 100) {
+      LOGD("%s: processing_thread alive cnt=%u frames=%u enabled=%d",
+                thread_name, cnt, cnt - last_log_cnt, cs->enabled);
+      last_log_cnt = cnt;
+    }
     ++cnt;
   }
+  LOGD("%s: processing_thread exiting cnt=%u", thread_name, cnt);
   return NULL;
 }
 
@@ -426,6 +444,9 @@ static void publish_thumbnail(PubMaster *pm, const ThumbnailJob &job) {
 }
 
 void camerad_thread() {
+  camerad_cycle_count++;
+  LOGD("========== camerad_thread START cycle=%d ==========", camerad_cycle_count);
+
   cl_device_id device_id = nullptr;
   cl_context context = nullptr;
 
@@ -438,6 +459,7 @@ void camerad_thread() {
       context = clCreateContext(props, 1, &cl_device, NULL, NULL, &cl_err);
       if (context && cl_err == CL_SUCCESS) {
         device_id = cl_device;
+        LOGD("camerad_thread cycle=%d: OpenCL context created", camerad_cycle_count);
       } else {
         if (context) {
           clReleaseContext(context);
@@ -452,19 +474,35 @@ void camerad_thread() {
 
   {
     MultiCameraState cameras = {};
+    LOGD("camerad_thread cycle=%d: MultiCameraState created", camerad_cycle_count);
+
     VisionIpcServer vipc_server("camerad", device_id, context);
+    LOGD("camerad_thread cycle=%d: VisionIpcServer created", camerad_cycle_count);
 
+    LOGD("camerad_thread cycle=%d: calling cameras_open", camerad_cycle_count);
     cameras_open(&cameras);
+    LOGD("camerad_thread cycle=%d: cameras_open DONE", camerad_cycle_count);
+
+    LOGD("camerad_thread cycle=%d: calling cameras_init", camerad_cycle_count);
     cameras_init(&vipc_server, &cameras, device_id, context);
+    LOGD("camerad_thread cycle=%d: cameras_init DONE", camerad_cycle_count);
+
+    LOGD("camerad_thread cycle=%d: starting thumbnail worker", camerad_cycle_count);
     start_thumbnail_worker(cameras.pm);
+    LOGD("camerad_thread cycle=%d: thumbnail worker started", camerad_cycle_count);
 
+    LOGD("camerad_thread cycle=%d: starting vipc server", camerad_cycle_count);
     vipc_server.start_listener();
+    LOGD("camerad_thread cycle=%d: vipc server started", camerad_cycle_count);
 
+    LOGD("camerad_thread cycle=%d: calling cameras_run", camerad_cycle_count);
     cameras_run(&cameras);
+    LOGD("camerad_thread cycle=%d: cameras_run returned", camerad_cycle_count);
   }
   if (context) {
     CL_CHECK(clReleaseContext(context));
   }
+  LOGD("========== camerad_thread END cycle=%d ==========", camerad_cycle_count);
 }
 
 int open_v4l_by_name_and_index(const char name[], int index, int flags) {

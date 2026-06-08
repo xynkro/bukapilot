@@ -32,6 +32,10 @@ static const bool env_disable_wide_road = (getenv("DISABLE_WIDE_ROAD") != nullpt
 static const bool env_disable_road = (getenv("DISABLE_ROAD") != nullptr);
 static const bool env_disable_driver = (getenv("DISABLE_DRIVER") != nullptr);
 static const bool env_log_raw_frames = (getenv("LOG_RAW_FRAMES") != nullptr);
+static const bool env_debug_camera = (getenv("DEBUG_CAMERA") != nullptr);
+
+#define DEBUG_LOG(fmt, ...) do { if (env_debug_camera) { LOGD(fmt, ##__VA_ARGS__); } } while(0)
+#define DEBUG_LOG_ERR(fmt, ...) do { if (env_debug_camera) { LOGE(fmt, ##__VA_ARGS__); } } while(0)
 
 static inline bool read_ctrl_fd(int fd, uint32_t id, int *out) {
   struct v4l2_control c = {};
@@ -42,8 +46,10 @@ static inline bool read_ctrl_fd(int fd, uint32_t id, int *out) {
 }
 
 void CameraState::camera_map_bufs(MultiCameraState *s) {
+  DEBUG_LOG("camera_map_bufs: camera_num=%d starting", camera_num);
   int exported_count = 0;
   for (int i = 0; i < FRAME_BUF_COUNT; ++i) {
+    DEBUG_LOG("camera_map_bufs: mapping buffer %d/%d", i, FRAME_BUF_COUNT);
     memset(&v4l_buf, 0, sizeof(v4l_buf));
     v4l_buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
     v4l_buf.memory = V4L2_MEMORY_MMAP;
@@ -51,15 +57,22 @@ void CameraState::camera_map_bufs(MultiCameraState *s) {
     v4l_buf.length = 1; //FMT_NUM_PLANES
     v4l_buf.m.planes = planes;
 
+    if (ioctl(video_fd, VIDIOC_QUERYBUF, &v4l_buf) < 0) {
+      DEBUG_LOG_ERR("camera_map_bufs: VIDIOC_QUERYBUF FAILED idx=%d errno=%d '%s'", i, errno, strerror(errno));
+    }
     assert(ioctl(video_fd, VIDIOC_QUERYBUF, &v4l_buf) >= 0);
 
     buf.camera_bufs[i].mmap_len = v4l_buf.m.planes[0].length;
     buf.camera_bufs[i].len = v4l_buf.m.planes[0].length;
     buf.camera_bufs[i].fd = -1;
+    DEBUG_LOG("camera_map_bufs: mmap buffer %d len=%u", i, v4l_buf.m.planes[0].length);
     buf.camera_bufs[i].addr = mmap(NULL, v4l_buf.m.planes[0].length,
                                   PROT_READ | PROT_WRITE,
                                   MAP_SHARED,
                                   video_fd, v4l_buf.m.planes[0].m.mem_offset);
+    if (buf.camera_bufs[i].addr == MAP_FAILED) {
+      DEBUG_LOG_ERR("camera_map_bufs: mmap FAILED idx=%d errno=%d '%s'", i, errno, strerror(errno));
+    }
     assert(buf.camera_bufs[i].addr != MAP_FAILED);
     buf.camera_bufs[i].init_yuv(buf.rgb_width, buf.rgb_height, buf.rgb_width, (size_t)buf.rgb_width * buf.rgb_height);
 
@@ -73,6 +86,7 @@ void CameraState::camera_map_bufs(MultiCameraState *s) {
         buf.camera_bufs[i].fd = exp.fd;
         buf.camera_bufs[i].frame_id_in_buf = false;
         exported_count++;
+        DEBUG_LOG("camera_map_bufs: exported buffer idx=%d fd=%d", i, exp.fd);
       } else {
         LOGW("camera %d: VIDIOC_EXPBUF failed idx=%d errno=%d '%s', disabling rk zerocopy",
              camera_num, i, errno, strerror(errno));
@@ -82,6 +96,8 @@ void CameraState::camera_map_bufs(MultiCameraState *s) {
 
   rk_zerocopy_active = rk_zerocopy_requested && (exported_count == FRAME_BUF_COUNT);
   if (!rk_zerocopy_active) {
+    DEBUG_LOG("camera_map_bufs: rk_zerocopy NOT active (requested=%d exported=%d/%d)", 
+              rk_zerocopy_requested, exported_count, FRAME_BUF_COUNT);
     for (int i = 0; i < FRAME_BUF_COUNT; ++i) {
       if (buf.camera_bufs[i].fd >= 0) {
         close(buf.camera_bufs[i].fd);
@@ -92,6 +108,7 @@ void CameraState::camera_map_bufs(MultiCameraState *s) {
   } else {
     LOGD("camera %d: rk zerocopy enabled with %d exported buffers", camera_num, exported_count);
   }
+  DEBUG_LOG("camera_map_bufs: camera_num=%d DONE exported=%d", camera_num, exported_count);
 }
 
 void CameraState::camera_init(MultiCameraState *s, VisionIpcServer * v, cl_device_id device_id, cl_context ctx, VisionStreamType yuv_type) {
@@ -99,7 +116,9 @@ void CameraState::camera_init(MultiCameraState *s, VisionIpcServer * v, cl_devic
   rk_zerocopy_requested = (getenv("CAMERAD_RK_ZEROCOPY") != nullptr);
   rk_zerocopy_active = false;
 
-  LOGD("camera init %d", camera_num);
+  DEBUG_LOG("camera_init: camera_num=%d starting", camera_num);
+
+  LOG("-- Setting camera ctrls");
 
   fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
   fmt.fmt.pix.width = 1920;
@@ -107,24 +126,36 @@ void CameraState::camera_init(MultiCameraState *s, VisionIpcServer * v, cl_devic
   fmt.fmt.pix.pixelformat = V4L2_PIX_FMT_NV12;
   fmt.fmt.pix.field = V4L2_FIELD_NONE;
 
+  DEBUG_LOG("camera_init: calling VIDIOC_S_FMT video_fd=%d", video_fd.fd_);
   if (ioctl(video_fd, VIDIOC_S_FMT, &fmt) < 0) {
     int err = errno;
     int vfd = video_fd;
+    DEBUG_LOG_ERR("camera_init: VIDIOC_S_FMT FAILED camera_num=%d fd=%d errno=%d '%s'", camera_num, vfd, err, strerror(errno));
     LOGE("camera %d: VIDIOC_S_FMT failed on fd %d (errno=%d '%s'), disabling camera",
          camera_num, vfd, err, strerror(err));
     enabled = false;
     return;
   }
+  DEBUG_LOG("camera_init: VIDIOC_S_FMT success");
 
   memset(&req, 0, sizeof(req));
   req.count = FRAME_BUF_COUNT;
   req.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
   req.memory = V4L2_MEMORY_MMAP;
+  DEBUG_LOG("camera_init: calling VIDIOC_REQBUFS count=%d", FRAME_BUF_COUNT);
+  if (ioctl(video_fd, VIDIOC_REQBUFS, &req) < 0) {
+    DEBUG_LOG_ERR("camera_init: VIDIOC_REQBUFS FAILED errno=%d '%s'", errno, strerror(errno));
+  }
+  LOGD("camera %d: VIDIOC_REQBUFS req.count=%d got.count=%d (asserting success)", camera_num, FRAME_BUF_COUNT, req.count);
   assert(ioctl(video_fd, VIDIOC_REQBUFS, &req) >= 0);
 
+  DEBUG_LOG("camera_init: calling buf.init");
   buf.init(device_id, ctx, this, v, FRAME_BUF_COUNT, yuv_type);
+  DEBUG_LOG("camera_init: calling camera_map_bufs");
   camera_map_bufs(s);
+  DEBUG_LOG("camera_init: calling setupVipcBuffers rk_zerocopy_active=%d", rk_zerocopy_active);
   buf.setupVipcBuffers(rk_zerocopy_active);
+  DEBUG_LOG("camera_init: camera_num=%d DONE", camera_num);
 }
 
 void CameraState::camera_open(MultiCameraState *multi_cam_state_, int camera_num_, bool enabled_) {
@@ -133,31 +164,51 @@ void CameraState::camera_open(MultiCameraState *multi_cam_state_, int camera_num
   enabled = enabled_;
   if (!enabled) return;
 
+  DEBUG_LOG("camera_open: camera_num=%d starting", camera_num);
+
   LOG("-- Setting camera ctrls");
   char device[32];
 
   // ctrl is at subdev 2,7,12
   snprintf(device, sizeof(device), "/dev/v4l-subdev%d", camera_num * 5 + 2);
+  DEBUG_LOG("camera_open: opening ctrl device %s", device);
   ctrl_fd = open(device, O_RDWR);
-  assert(ctrl_fd >= 0);
+  if (ctrl_fd < 0) {
+    DEBUG_LOG_ERR("camera_open: FAILED to open ctrl_fd errno=%d '%s'", errno, strerror(errno));
+    assert(ctrl_fd >= 0);
+  }
+  DEBUG_LOG("camera_open: ctrl_fd=%d opened", ctrl_fd.fd_);
 
   // set vflip = 1 to all cameras
   ctrl.id = V4L2_CID_HFLIP;
   ctrl.value = 0;
-  assert(ioctl(ctrl_fd, VIDIOC_S_CTRL, &ctrl) >= 0);
+  if (ioctl(ctrl_fd, VIDIOC_S_CTRL, &ctrl) < 0) {
+    DEBUG_LOG_ERR("camera_open: VIDIOC_S_CTRL HFLIP failed errno=%d '%s'", errno, strerror(errno));
+  }
   // set vflip = 1 to all cameras
   ctrl.id = V4L2_CID_VFLIP;
   ctrl.value = 1;
-  assert(ioctl(ctrl_fd, VIDIOC_S_CTRL, &ctrl) >= 0);
+  if (ioctl(ctrl_fd, VIDIOC_S_CTRL, &ctrl) < 0) {
+    DEBUG_LOG_ERR("camera_open: VIDIOC_S_CTRL VFLIP failed errno=%d '%s'", errno, strerror(errno));
+  }
 
+  DEBUG_LOG("camera_open: opening video device for camera_num=%d", camera_num);
   video_fd = open_v4l_by_name_and_index("rkisp_mainpath", camera_num);
+  DEBUG_LOG("camera_open: video_fd=%d for camera_num=%d", video_fd.fd_, camera_num);
+  if (video_fd < 0) {
+    DEBUG_LOG_ERR("camera_open: FAILED to open video_fd errno=%d '%s'", errno, strerror(errno));
+  }
   assert(video_fd >= 0);
 }
 
 void CameraState::stream_start() {
-  if (!enabled) return;
+  if (!enabled) {
+    DEBUG_LOG("stream_start: camera_num=%d SKIPPED (not enabled)", camera_num);
+    return;
+  }
   // start v4l2 buffer queue
   LOG("-- Start Queueing V4L2 buffers");
+  DEBUG_LOG("stream_start: camera_num=%d queueing %d buffers", camera_num, FRAME_BUF_COUNT);
   for (int i = 0; i < FRAME_BUF_COUNT; ++i) {
     memset(&v4l_buf, 0, sizeof(v4l_buf));
     memset(planes, 0, sizeof(planes));
@@ -172,17 +223,25 @@ void CameraState::stream_start() {
       enabled = false;
       return;
     }
+    DEBUG_LOG("stream_start: QBUF idx=%d done", i);
   }
 
+  DEBUG_LOG("stream_start: camera_num=%d calling VIDIOC_STREAMON", camera_num);
   // start streaming
   if (ioctl(video_fd, VIDIOC_STREAMON, &fmt.type) < 0) {
+    DEBUG_LOG_ERR("stream_start: VIDIOC_STREAMON FAILED camera_num=%d errno=%d '%s'", camera_num, errno, strerror(errno));
     LOGE("camera %d: VIDIOC_STREAMON failed errno=%d '%s'", camera_num, errno, strerror(errno));
     enabled = false;
+  } else {
+    DEBUG_LOG("stream_start: VIDIOC_STREAMON SUCCESS camera_num=%d", camera_num);
   }
 }
 
 void CameraState::dequeue_buf() {
-  if (!enabled) return;
+  if (!enabled) {
+    DEBUG_LOG("dequeue_buf: camera_num=%d SKIPPED (not enabled)", camera_num);
+    return;
+  }
 
   memset(&v4l_buf, 0, sizeof(v4l_buf));
   memset(planes, 0, sizeof(planes));
@@ -191,9 +250,12 @@ void CameraState::dequeue_buf() {
   v4l_buf.length = 1;
   v4l_buf.m.planes = planes;
   if (ioctl(video_fd, VIDIOC_DQBUF, &v4l_buf) < 0) {
+    DEBUG_LOG_ERR("dequeue_buf: camera_num=%d VIDIOC_DQBUF FAILED errno=%d '%s'", camera_num, errno, strerror(errno));
     LOGE("camera %d: VIDIOC_DQBUF failed errno=%d '%s'", camera_num, errno, strerror(errno));
+    enabled = false;
     return;
   }
+  DEBUG_LOG("dequeue_buf: camera_num=%d idx=%d seq=%d", camera_num, v4l_buf.index, v4l_buf.sequence);
 
   const int idx = v4l_buf.index;
   FrameMetadata &md = buf.camera_bufs_metadata[idx];
@@ -267,31 +329,42 @@ void CameraState::dequeue_buf() {
   md.timestamp_eof = cap_time;
 
   buf.queue(idx);
+  DEBUG_LOG("dequeue_buf: camera_num=%d buf.queue idx=%d seq=%d ts=%lu", camera_num, idx, v4l_buf.sequence, (unsigned long)cap_time);
 
   if (ioctl(video_fd, VIDIOC_QBUF, &v4l_buf) < 0) {
+    DEBUG_LOG_ERR("dequeue_buf: camera_num=%d VIDIOC_QBUF post-dequeue FAILED errno=%d '%s'", camera_num, errno, strerror(errno));
     LOGE("camera %d: VIDIOC_QBUF failed post-dequeue errno=%d '%s'", camera_num, errno, strerror(errno));
+    enabled = false;
     return;
   }
+  DEBUG_LOG("dequeue_buf: camera_num=%d QBUF done seq=%d COMPLETE", camera_num, v4l_buf.sequence);
 }
 
 void cameras_init(VisionIpcServer *v, MultiCameraState *s, cl_device_id device_id, cl_context ctx) {
-
+  LOG("-- Initializing cameras");
+  LOGD("cameras_init: starting");
+  LOGD("cameras_init: driver_cam");
   s->driver_cam.camera_init(s, v, device_id, ctx, VISION_STREAM_DRIVER);
+  LOGD("cameras_init: road_cam");
   s->road_cam.camera_init(s, v, device_id, ctx, VISION_STREAM_ROAD);
+  LOGD("cameras_init: wide_road_cam");
   s->wide_road_cam.camera_init(s, v, device_id, ctx, VISION_STREAM_WIDE_ROAD);
 
+  LOGD("cameras_init: creating PubMaster");
   s->pm = new PubMaster({"roadCameraState", "driverCameraState", "wideRoadCameraState", "thumbnail"});
+  LOGD("cameras_init: DONE");
 }
 
 void cameras_open(MultiCameraState *s) {
   LOG("-- Opening devices");
+  DEBUG_LOG("cameras_open: starting");
   s->wide_road_cam.camera_open(s, 0, !env_disable_wide_road);
-  LOGD("wide road camera opened");
+  DEBUG_LOG("cameras_open: wide road camera opened enabled=%d", s->wide_road_cam.enabled);
   s->road_cam.camera_open(s, 1, !env_disable_road);
-  LOGD("road camera opened");
+  DEBUG_LOG("cameras_open: road camera opened enabled=%d", s->road_cam.enabled);
   s->driver_cam.camera_open(s, 2, !env_disable_driver);
-  LOGD("driver camera opened");
- }
+  DEBUG_LOG("cameras_open: driver camera opened enabled=%d", s->driver_cam.enabled);
+}
 
 void CameraState::camera_close() {
   // stop devices
@@ -308,6 +381,16 @@ void CameraState::camera_close() {
         buf.camera_bufs[i].addr = nullptr;
         buf.camera_bufs[i].mmap_len = 0;
       }
+    }
+  }
+
+  // Stop streaming before closing fd to ensure clean buffer release on kernel side
+  if (video_fd.fd_ >= 0) {
+    enum v4l2_buf_type type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
+    if (ioctl(video_fd.fd_, VIDIOC_STREAMOFF, &type) < 0) {
+      LOGE("camera %d: VIDIOC_STREAMOFF failed on close errno=%d '%s'", camera_num, errno, strerror(errno));
+    } else {
+      DEBUG_LOG("camera_close: camera_num=%d VIDIOC_STREAMOFF success", camera_num);
     }
   }
 
@@ -329,17 +412,25 @@ void CameraState::camera_close() {
 }
 
 void cameras_close(MultiCameraState *s) {
+  DEBUG_LOG("cameras_close: starting");
   s->driver_cam.camera_close();
+  DEBUG_LOG("cameras_close: driver_cam closed");
   s->road_cam.camera_close();
+  DEBUG_LOG("cameras_close: road_cam closed");
   s->wide_road_cam.camera_close();
+  DEBUG_LOG("cameras_close: wide_road_cam closed");
 
+  DEBUG_LOG("cameras_close: deleting pm");
   delete s->pm;
 
   // restart rkaiq 3A server
+  DEBUG_LOG("cameras_close: killing rkaiq_3A_server");
   system("sudo killall -q /usr/kommu/rkaiq_3A_server || true");
-  usleep(2500000);  // blocks for 2.5 seconds
+  DEBUG_LOG("cameras_close: sleeping 4s for rkaiq restart");
+  usleep(4000000);  // blocks for 4 seconds (was 2.5s)
+  DEBUG_LOG("cameras_close: starting rkaiq_3A_server");
   system("sudo /usr/kommu/rkaiq_3A_server &");
-
+  DEBUG_LOG("cameras_close: DONE");
 }
 
 static void process_driver_camera(MultiCameraState *s, CameraState *c, uint32_t cnt) {
@@ -391,21 +482,29 @@ bool check_timestamp_sync(uint64_t *t1, int len1, uint64_t *t2, int len2) {
 #define SYNC_CHECK_COUNT 40
 void cameras_run(MultiCameraState *s) {
   LOG("-- Starting threads");
+  DEBUG_LOG("cameras_run: starting threads");
   std::vector<std::thread> threads;
   if (s->driver_cam.enabled) threads.push_back(start_process_thread(s, &s->driver_cam, process_driver_camera));
   if (s->road_cam.enabled) threads.push_back(start_process_thread(s, &s->road_cam, process_road_camera));
   if (s->wide_road_cam.enabled) threads.push_back(start_process_thread(s, &s->wide_road_cam, process_road_camera));
+  DEBUG_LOG("cameras_run: threads started, calling stream_start");
 
-  s->wide_road_cam.stream_start();
+  DEBUG_LOG("cameras_run: stream_start road_cam enabled=%d", s->road_cam.enabled);
   s->road_cam.stream_start();
+  DEBUG_LOG("cameras_run: stream_start wide_road_cam enabled=%d", s->wide_road_cam.enabled);
+  s->wide_road_cam.stream_start();
+  DEBUG_LOG("cameras_run: stream_start driver_cam enabled=%d", s->driver_cam.enabled);
   s->driver_cam.stream_start();
+  DEBUG_LOG("cameras_run: all streams started");
 
   uint64_t road_cam_ts[SYNC_CHECK_LEN];
   uint64_t wide_cam_ts[SYNC_CHECK_LEN];
   int count = 0;
+  int poll_timeout_count = 0;
 
   // poll events
   LOG("-- Dequeueing Video events");
+  DEBUG_LOG("cameras_run: entering poll loop");
   while (!do_exit) {
     struct pollfd fds[3] = {
       { .fd = s->driver_cam.video_fd, .events = POLLPRI | POLLIN },
@@ -416,12 +515,28 @@ void cameras_run(MultiCameraState *s) {
     int ret = poll(fds, std::size(fds), 1000);
     if (ret < 0) {
       if (errno == EINTR || errno == EAGAIN) continue;
+      DEBUG_LOG_ERR("cameras_run: poll FAILED ret=%d errno=%d", ret, errno);
       LOGE("poll failed (%d - %d)", ret, errno);
       break;
     }
 
+    if (ret == 0) {
+      poll_timeout_count++;
+      if (poll_timeout_count % 100 == 0) {
+        DEBUG_LOG("cameras_run: poll timeout #%d (no events)", poll_timeout_count);
+      }
+      if (poll_timeout_count > 300) {
+        DEBUG_LOG_ERR("cameras_run: poll timeout for 300 iterations! driver=%d road=%d wide=%d",
+                      s->driver_cam.enabled, s->road_cam.enabled, s->wide_road_cam.enabled);
+        poll_timeout_count = 0;
+      }
+      continue;
+    }
+    poll_timeout_count = 0;
+
     for (int i = 0; i < 3; i++) {
       if (fds[i].revents & (POLLPRI | POLLIN)) {
+        DEBUG_LOG("cameras_run: poll event on camera %d revents=0x%x", i, fds[i].revents);
         // Dequeue buffers for the corresponding camera if the file descriptor is ready
         switch (i) {
           case 0:
@@ -443,8 +558,20 @@ void cameras_run(MultiCameraState *s) {
         }
       }
     }
+
+    // Check road and wide camera timestamp sync after initial window is fully populated.
+    // We wait until count > SYNC_CHECK_COUNT+SYNC_CHECK_LEN so both circular arrays
+    // have valid, paired entries. Then check every SYNC_CHECK_LEN road_cam frames.
+    if (count > SYNC_CHECK_COUNT + SYNC_CHECK_LEN && (count - SYNC_CHECK_COUNT) % SYNC_CHECK_LEN == 0) {
+      if (!check_timestamp_sync(road_cam_ts, SYNC_CHECK_LEN, wide_cam_ts, SYNC_CHECK_LEN)) {
+        DEBUG_LOG_ERR("cameras_run: camera timestamps out of sync at count=%d, road=%lu wide=%lu",
+                      count, (unsigned long)road_cam_ts[0],
+                      (unsigned long)wide_cam_ts[0]);
+      }
+    }
   }
 
+  DEBUG_LOG("cameras_run: exiting loop");
   LOG("************** STOPPING **************");
 
   for (auto &t : threads) t.join();
