@@ -232,14 +232,17 @@ void CameraState::stream_start() {
     DEBUG_LOG_ERR("stream_start: VIDIOC_STREAMON FAILED camera_num=%d errno=%d '%s'", camera_num, errno, strerror(errno));
     LOGE("camera %d: VIDIOC_STREAMON failed errno=%d '%s'", camera_num, errno, strerror(errno));
     enabled = false;
+    LOG("stream_start_fail cam=%d", camera_num);
   } else {
     DEBUG_LOG("stream_start: VIDIOC_STREAMON SUCCESS camera_num=%d", camera_num);
+    LOG("stream_start_ok cam=%d", camera_num);
   }
 }
 
 void CameraState::dequeue_buf() {
   if (!enabled) {
     DEBUG_LOG("dequeue_buf: camera_num=%d SKIPPED (not enabled)", camera_num);
+    LOGE("dequeue_fail cam=%d reason=not_enabled", camera_num);
     return;
   }
 
@@ -253,6 +256,7 @@ void CameraState::dequeue_buf() {
     DEBUG_LOG_ERR("dequeue_buf: camera_num=%d VIDIOC_DQBUF FAILED errno=%d '%s'", camera_num, errno, strerror(errno));
     LOGE("camera %d: VIDIOC_DQBUF failed errno=%d '%s'", camera_num, errno, strerror(errno));
     enabled = false;
+    LOGE("dequeue_fail cam=%d errno=%d", camera_num, errno);
     return;
   }
   DEBUG_LOG("dequeue_buf: camera_num=%d idx=%d seq=%d", camera_num, v4l_buf.index, v4l_buf.sequence);
@@ -330,6 +334,7 @@ void CameraState::dequeue_buf() {
 
   buf.queue(idx);
   DEBUG_LOG("dequeue_buf: camera_num=%d buf.queue idx=%d seq=%d ts=%lu", camera_num, idx, v4l_buf.sequence, (unsigned long)cap_time);
+  LOG("dequeue_ok cam=%d seq=%u ts=%llu", camera_num, v4l_buf.sequence, (unsigned long long)cap_time);
 
   if (ioctl(video_fd, VIDIOC_QBUF, &v4l_buf) < 0) {
     DEBUG_LOG_ERR("dequeue_buf: camera_num=%d VIDIOC_QBUF post-dequeue FAILED errno=%d '%s'", camera_num, errno, strerror(errno));
@@ -338,6 +343,7 @@ void CameraState::dequeue_buf() {
     return;
   }
   DEBUG_LOG("dequeue_buf: camera_num=%d QBUF done seq=%d COMPLETE", camera_num, v4l_buf.sequence);
+  LOG("dequeue_qbuf cam=%d seq=%u", camera_num, v4l_buf.sequence);
 }
 
 void cameras_init(VisionIpcServer *v, MultiCameraState *s, cl_device_id device_id, cl_context ctx) {
@@ -364,6 +370,8 @@ void cameras_open(MultiCameraState *s) {
   DEBUG_LOG("cameras_open: road camera opened enabled=%d", s->road_cam.enabled);
   s->driver_cam.camera_open(s, 2, !env_disable_driver);
   DEBUG_LOG("cameras_open: driver camera opened enabled=%d", s->driver_cam.enabled);
+  LOG("cameras_open enabled: wide=%d road=%d driver=%d",
+      s->wide_road_cam.enabled, s->road_cam.enabled, s->driver_cam.enabled);
 }
 
 void CameraState::camera_close() {
@@ -564,9 +572,17 @@ void cameras_run(MultiCameraState *s) {
     // have valid, paired entries. Then check every SYNC_CHECK_LEN road_cam frames.
     if (count > SYNC_CHECK_COUNT + SYNC_CHECK_LEN && (count - SYNC_CHECK_COUNT) % SYNC_CHECK_LEN == 0) {
       if (!check_timestamp_sync(road_cam_ts, SYNC_CHECK_LEN, wide_cam_ts, SYNC_CHECK_LEN)) {
-        DEBUG_LOG_ERR("cameras_run: camera timestamps out of sync at count=%d, road=%lu wide=%lu",
-                      count, (unsigned long)road_cam_ts[0],
-                      (unsigned long)wide_cam_ts[0]);
+        LOGE("camera sync FAIL count=%d road=[%llu,%llu,%llu,%llu,%llu] wide=[%llu,%llu,%llu,%llu,%llu]",
+             count,
+             (unsigned long long)road_cam_ts[0], (unsigned long long)road_cam_ts[1],
+             (unsigned long long)road_cam_ts[2], (unsigned long long)road_cam_ts[3],
+             (unsigned long long)road_cam_ts[4],
+             (unsigned long long)wide_cam_ts[0], (unsigned long long)wide_cam_ts[1],
+             (unsigned long long)wide_cam_ts[2], (unsigned long long)wide_cam_ts[3],
+             (unsigned long long)wide_cam_ts[4]);
+      } else {
+        LOG("camera sync OK count=%d road=%llu wide=%llu",
+            count, (unsigned long long)road_cam_ts[0], (unsigned long long)wide_cam_ts[0]);
       }
     }
   }
