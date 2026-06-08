@@ -137,6 +137,12 @@ class Soundd:
   def update_alert(self, new_alert, quiet_mode=False, alert_type_name=None):
     if quiet_mode and alert_type_name and "laneChangeBlocked" in alert_type_name:
       return
+
+    # Mute all alerts except posenetInvalid
+    if alert_type_name is None or "posenetInvalid" not in alert_type_name:
+      if new_alert != AudibleAlert.none:
+        return
+
     if quiet_mode and new_alert != AudibleAlert.refuse:
       allowed = new_alert in {
         AudibleAlert.none,
