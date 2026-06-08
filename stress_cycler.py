@@ -3,6 +3,11 @@ import os, sys, time, signal, subprocess
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
+try:
+  from system.hardware.ka2.status_led.status_led import set_led
+except ImportError:
+  set_led = None  # fallback if not on KA2 hardware
+
 MAX_CYCLES, ONROAD, OFFROAD = 2, 35, 5
 BASEDIR = Path(__file__).resolve().parent
 test_proc = None
@@ -35,6 +40,14 @@ def stop_harness():
 def set_gov(gov):
   if os.path.exists(node := "/sys/devices/system/cpu/cpufreq/policy0/scaling_governor"):
     run_cmd(f"echo {gov} | sudo tee {node}", shell=True)
+
+def set_offroad_led():
+  if set_led is None:
+    return
+  try:
+    set_led("YELLOW", mode="solid", brightness="50", fire_and_forget=True)
+  except Exception:
+    pass
 
 def cleanup():
   stop_harness()
@@ -92,6 +105,14 @@ for cycle in range(1, MAX_CYCLES + 1):
 
   # --- PHASE 2: CLEAN TEARDOWN & RECOVERY LAYOUT ---
   stop_harness()
+
+  # Kill ALL openpilot processes to ensure clean state for next cycle.
+  # Without this, manager/camerad/encoderd carry over dirty VIPC state and
+  # rkaiq_3A_server stays dead — causing VIPC clients to receive no frames.
+  cleanup()
+
+  # Signal offroad: yellow LED while system is in recovery/cooldown phase
+  set_offroad_led()
 
   # Wait for hardwared to detect feeder disconnect and complete offroad transition
   # This matches openpilot's DISCONNECT_TIMEOUT (5s) + transition time
