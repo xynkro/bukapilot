@@ -108,7 +108,7 @@ procs = [
   PythonProcess("radard", "selfdrive.controls.radard", only_onroad),
   PythonProcess("hardwared", "system.hardware.hardwared", always_run),
   PythonProcess("tombstoned", "system.tombstoned", always_run, enabled=not PC),
-  PythonProcess("updated", "system.updated.updated", only_offroad, enabled=not PC),
+  #PythonProcess("updated", "system.updated.updated", only_offroad, enabled=not PC),
   NativeProcess("uploader", ".", ["python3", "-m", "system.loggerd.uploader"], always_run),
   PythonProcess("statsd", "system.statsd", always_run, enabled=TICI),
   PythonProcess("feedbackd", "selfdrive.ui.feedback.feedbackd", only_onroad),
