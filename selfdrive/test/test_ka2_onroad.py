@@ -95,6 +95,10 @@ def can_replay_test_enabled() -> bool:
   return os.environ.get("KA2_CAN_REPLAY") == "1"
 
 
+def skip_sd_test() -> bool:
+  return os.environ.get("KA2_SKIP_SD_TEST") == "1"
+
+
 def burn_in_duration_s() -> int:
   try:
     return max(1, int(os.environ.get("KA2_BURN_IN_DURATION_S", str(BURN_IN_DURATION_S))))
@@ -451,6 +455,8 @@ def _wait_ka2_sd_ready(hw: Ka2, timeout_s: float, phase: str) -> None:
 
 def _ensure_ka2_sd_ready() -> None:
   """Require SD inserted; if unformatted, run Ka2.format_sd() and wait for completion."""
+  if skip_sd_test():
+    return
   if not isinstance(HARDWARE, Ka2):
     return
   hw = HARDWARE
@@ -833,6 +839,8 @@ class TestOnroad:
     assert kinds, f"could not read qcomGnss union (sample); count={n}"
 
   def test_ka2_sd_card_partition_present(self):
+    if skip_sd_test():
+      pytest.skip("SD card test skipped via KA2_SKIP_SD_TEST=1")
     # Simple QC check requested: if this partition node is missing, treat as not mounted/formatted.
     ok = self._preflight.get("sd_card_partition_present", Path("/dev/mmcblk1p1").exists())
     assert ok, "/dev/mmcblk1p1 not found (SD card missing/unformatted/unmounted)"

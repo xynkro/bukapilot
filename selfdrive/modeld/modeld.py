@@ -538,17 +538,37 @@ def main(demo=False):
 
   st = time.monotonic()
   cloudlog.warning("setting up CL context")
-  cl_context = CLContext()
+  try:
+    cl_context = CLContext()
+    cloudlog.warning("CLContext() constructor completed successfully")
+  except Exception as e:
+    cloudlog.error("CLContext() FAILED with exception: %s", repr(e))
+    import traceback
+    cloudlog.error("CLContext() traceback: %s", traceback.format_exc())
+    raise
+  
   if KA2 and not USBGPU:
+    cloudlog.warning("set_external_cl_context: context_ptr=%lu device_id_ptr=%lu queue_ptr=%lu",
+                     cl_context.context_ptr, cl_context.device_id_ptr, cl_context.queue_ptr)
     set_external_cl_context(cl_context.context_ptr, cl_context.device_id_ptr, cl_context.queue_ptr)
   cloudlog.warning("CL context ready; loading model")
-  if _use_rknn_driving():
-    cloudlog.warning("using RKNN driving runner (vision=%s policy=%s); inputs cast to float16", VISION_RKNN_PATH.name, POLICY_RKNN_PATH.name)
-    model = ModelStateRKNN(cl_context)
-  else:
-    override = " (USE_RKNN=0)" if (VISION_RKNN_PATH.exists() and POLICY_RKNN_PATH.exists()) else ""
-    cloudlog.warning(f"using tinygrad driving runner{override}")
-    model = ModelState(cl_context)
+  try:
+    if _use_rknn_driving():
+      cloudlog.warning("using RKNN driving runner (vision=%s policy=%s); inputs cast to float16", VISION_RKNN_PATH.name, POLICY_RKNN_PATH.name)
+      cloudlog.warning("ModelStateRKNN: START initialization")
+      model = ModelStateRKNN(cl_context)
+      cloudlog.warning("ModelStateRKNN: initialization complete")
+    else:
+      override = " (USE_RKNN=0)" if (VISION_RKNN_PATH.exists() and POLICY_RKNN_PATH.exists()) else ""
+      cloudlog.warning(f"using tinygrad driving runner{override}")
+      cloudlog.warning("ModelState: START initialization")
+      model = ModelState(cl_context)
+      cloudlog.warning("ModelState: initialization complete")
+  except Exception as e:
+    cloudlog.error("Model initialization FAILED with exception: %s", repr(e))
+    import traceback
+    cloudlog.error("Model initialization traceback: %s", traceback.format_exc())
+    raise
   cloudlog.warning(f"models loaded in {time.monotonic() - st:.1f}s, modeld starting")
 
   # visionipc clients

@@ -116,8 +116,7 @@ void CameraState::camera_init(MultiCameraState *s, VisionIpcServer * v, cl_devic
   rk_zerocopy_requested = (getenv("CAMERAD_RK_ZEROCOPY") != nullptr);
   rk_zerocopy_active = false;
 
-  DEBUG_LOG("camera_init: camera_num=%d starting", camera_num);
-
+  LOGD("camera_init: camera_num=%d starting device_id=%p ctx=%p", camera_num, (void*)device_id, (void*)ctx);
   LOG("-- Setting camera ctrls");
 
   fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
@@ -126,36 +125,36 @@ void CameraState::camera_init(MultiCameraState *s, VisionIpcServer * v, cl_devic
   fmt.fmt.pix.pixelformat = V4L2_PIX_FMT_NV12;
   fmt.fmt.pix.field = V4L2_FIELD_NONE;
 
-  DEBUG_LOG("camera_init: calling VIDIOC_S_FMT video_fd=%d", video_fd.fd_);
+  LOGD("camera_init: calling VIDIOC_S_FMT video_fd=%d", video_fd.fd_);
   if (ioctl(video_fd, VIDIOC_S_FMT, &fmt) < 0) {
     int err = errno;
     int vfd = video_fd;
-    DEBUG_LOG_ERR("camera_init: VIDIOC_S_FMT FAILED camera_num=%d fd=%d errno=%d '%s'", camera_num, vfd, err, strerror(errno));
+    LOGE("camera_init: VIDIOC_S_FMT FAILED camera_num=%d fd=%d errno=%d '%s'", camera_num, vfd, err, strerror(errno));
     LOGE("camera %d: VIDIOC_S_FMT failed on fd %d (errno=%d '%s'), disabling camera",
          camera_num, vfd, err, strerror(err));
     enabled = false;
     return;
   }
-  DEBUG_LOG("camera_init: VIDIOC_S_FMT success");
+  LOGD("camera_init: VIDIOC_S_FMT success");
 
   memset(&req, 0, sizeof(req));
   req.count = FRAME_BUF_COUNT;
   req.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
   req.memory = V4L2_MEMORY_MMAP;
-  DEBUG_LOG("camera_init: calling VIDIOC_REQBUFS count=%d", FRAME_BUF_COUNT);
+  LOGD("camera_init: calling VIDIOC_REQBUFS count=%d", FRAME_BUF_COUNT);
   if (ioctl(video_fd, VIDIOC_REQBUFS, &req) < 0) {
-    DEBUG_LOG_ERR("camera_init: VIDIOC_REQBUFS FAILED errno=%d '%s'", errno, strerror(errno));
+    LOGE("camera_init: VIDIOC_REQBUFS FAILED errno=%d '%s'", errno, strerror(errno));
   }
-  LOGD("camera %d: VIDIOC_REQBUFS req.count=%d got.count=%d (asserting success)", camera_num, FRAME_BUF_COUNT, req.count);
+  LOGD("camera %d: VIDIOC_REQBUFS req.count=%d got.count=%d", camera_num, FRAME_BUF_COUNT, req.count);
   assert(ioctl(video_fd, VIDIOC_REQBUFS, &req) >= 0);
 
-  DEBUG_LOG("camera_init: calling buf.init");
+  LOGD("camera_init: calling buf.init device_id=%p", (void*)device_id);
   buf.init(device_id, ctx, this, v, FRAME_BUF_COUNT, yuv_type);
-  DEBUG_LOG("camera_init: calling camera_map_bufs");
+  LOGD("camera_init: calling camera_map_bufs");
   camera_map_bufs(s);
-  DEBUG_LOG("camera_init: calling setupVipcBuffers rk_zerocopy_active=%d", rk_zerocopy_active);
+  LOGD("camera_init: calling setupVipcBuffers rk_zerocopy_active=%d", rk_zerocopy_active);
   buf.setupVipcBuffers(rk_zerocopy_active);
-  DEBUG_LOG("camera_init: camera_num=%d DONE", camera_num);
+  LOGD("camera_init: camera_num=%d DONE", camera_num);
 }
 
 void CameraState::camera_open(MultiCameraState *multi_cam_state_, int camera_num_, bool enabled_) {
@@ -203,12 +202,12 @@ void CameraState::camera_open(MultiCameraState *multi_cam_state_, int camera_num
 
 void CameraState::stream_start() {
   if (!enabled) {
-    DEBUG_LOG("stream_start: camera_num=%d SKIPPED (not enabled)", camera_num);
+    LOGD("stream_start: camera_num=%d SKIPPED (not enabled)", camera_num);
     return;
   }
   // start v4l2 buffer queue
   LOG("-- Start Queueing V4L2 buffers");
-  DEBUG_LOG("stream_start: camera_num=%d queueing %d buffers", camera_num, FRAME_BUF_COUNT);
+  LOGD("stream_start: camera_num=%d queueing %d buffers", camera_num, FRAME_BUF_COUNT);
   for (int i = 0; i < FRAME_BUF_COUNT; ++i) {
     memset(&v4l_buf, 0, sizeof(v4l_buf));
     memset(planes, 0, sizeof(planes));
@@ -223,18 +222,17 @@ void CameraState::stream_start() {
       enabled = false;
       return;
     }
-    DEBUG_LOG("stream_start: QBUF idx=%d done", i);
+    LOGD("stream_start: QBUF idx=%d done", i);
   }
 
-  DEBUG_LOG("stream_start: camera_num=%d calling VIDIOC_STREAMON", camera_num);
+  LOGD("stream_start: camera_num=%d calling VIDIOC_STREAMON", camera_num);
   // start streaming
   if (ioctl(video_fd, VIDIOC_STREAMON, &fmt.type) < 0) {
-    DEBUG_LOG_ERR("stream_start: VIDIOC_STREAMON FAILED camera_num=%d errno=%d '%s'", camera_num, errno, strerror(errno));
+    LOGE("stream_start: VIDIOC_STREAMON FAILED camera_num=%d errno=%d '%s'", camera_num, errno, strerror(errno));
     LOGE("camera %d: VIDIOC_STREAMON failed errno=%d '%s'", camera_num, errno, strerror(errno));
     enabled = false;
     LOG("stream_start_fail cam=%d", camera_num);
   } else {
-    DEBUG_LOG("stream_start: VIDIOC_STREAMON SUCCESS camera_num=%d", camera_num);
     LOG("stream_start_ok cam=%d", camera_num);
   }
 }
@@ -348,12 +346,12 @@ void CameraState::dequeue_buf() {
 
 void cameras_init(VisionIpcServer *v, MultiCameraState *s, cl_device_id device_id, cl_context ctx) {
   LOG("-- Initializing cameras");
-  LOGD("cameras_init: starting");
-  LOGD("cameras_init: driver_cam");
+  LOGD("cameras_init: starting device_id=%p ctx=%p", (void*)device_id, (void*)ctx);
+  LOGD("cameras_init: driver_cam START");
   s->driver_cam.camera_init(s, v, device_id, ctx, VISION_STREAM_DRIVER);
-  LOGD("cameras_init: road_cam");
+  LOGD("cameras_init: road_cam START");
   s->road_cam.camera_init(s, v, device_id, ctx, VISION_STREAM_ROAD);
-  LOGD("cameras_init: wide_road_cam");
+  LOGD("cameras_init: wide_road_cam START");
   s->wide_road_cam.camera_init(s, v, device_id, ctx, VISION_STREAM_WIDE_ROAD);
 
   LOGD("cameras_init: creating PubMaster");
@@ -363,13 +361,16 @@ void cameras_init(VisionIpcServer *v, MultiCameraState *s, cl_device_id device_i
 
 void cameras_open(MultiCameraState *s) {
   LOG("-- Opening devices");
-  DEBUG_LOG("cameras_open: starting");
+  LOGD("cameras_open: starting");
+  LOGD("cameras_open: wide_road_cam START");
   s->wide_road_cam.camera_open(s, 0, !env_disable_wide_road);
-  DEBUG_LOG("cameras_open: wide road camera opened enabled=%d", s->wide_road_cam.enabled);
+  LOGD("cameras_open: wide_road_cam enabled=%d", s->wide_road_cam.enabled);
+  LOGD("cameras_open: road_cam START");
   s->road_cam.camera_open(s, 1, !env_disable_road);
-  DEBUG_LOG("cameras_open: road camera opened enabled=%d", s->road_cam.enabled);
+  LOGD("cameras_open: road_cam enabled=%d", s->road_cam.enabled);
+  LOGD("cameras_open: driver_cam START");
   s->driver_cam.camera_open(s, 2, !env_disable_driver);
-  DEBUG_LOG("cameras_open: driver camera opened enabled=%d", s->driver_cam.enabled);
+  LOGD("cameras_open: driver_cam enabled=%d", s->driver_cam.enabled);
   LOG("cameras_open enabled: wide=%d road=%d driver=%d",
       s->wide_road_cam.enabled, s->road_cam.enabled, s->driver_cam.enabled);
 }

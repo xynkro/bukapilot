@@ -56,21 +56,43 @@ void cl_print_build_errors(cl_program program, cl_device_id device) {
 }  // namespace
 
 cl_device_id cl_get_device_id(cl_device_type device_type) {
+  LOGD("cl_get_device_id: START - device_type=%lu", (unsigned long)device_type);
   cl_uint num_platforms = 0;
-  CL_CHECK(clGetPlatformIDs(0, NULL, &num_platforms));
+  cl_int ret = clGetPlatformIDs(0, NULL, &num_platforms);
+  if (ret != CL_SUCCESS) {
+    LOGE("cl_get_device_id: clGetPlatformIDs (count) FAILED ret=%d", ret);
+    assert(0);
+    return nullptr;
+  }
+  LOGD("cl_get_device_id: found %u platforms", num_platforms);
+  
   std::unique_ptr<cl_platform_id[]> platform_ids = std::make_unique<cl_platform_id[]>(num_platforms);
-  CL_CHECK(clGetPlatformIDs(num_platforms, &platform_ids[0], NULL));
+  ret = clGetPlatformIDs(num_platforms, &platform_ids[0], NULL);
+  if (ret != CL_SUCCESS) {
+    LOGE("cl_get_device_id: clGetPlatformIDs FAILED ret=%d", ret);
+    assert(0);
+    return nullptr;
+  }
 
   for (size_t i = 0; i < num_platforms; ++i) {
-    LOGD("platform[%zu] CL_PLATFORM_NAME: %s", i, get_platform_info(platform_ids[i], CL_PLATFORM_NAME).c_str());
+    std::string platform_name = get_platform_info(platform_ids[i], CL_PLATFORM_NAME);
+    LOGD("cl_get_device_id: checking platform[%zu] '%s'", i, platform_name.c_str());
 
     // Get first device
-    if (cl_device_id device_id = NULL; clGetDeviceIDs(platform_ids[i], device_type, 1, &device_id, NULL) == 0 && device_id) {
+    cl_device_id device_id = NULL;
+    cl_int dev_ret = clGetDeviceIDs(platform_ids[i], device_type, 1, &device_id, NULL);
+    LOGD("cl_get_device_id: platform[%zu] clGetDeviceIDs ret=%d device_id=%p", i, dev_ret, (void*)device_id);
+    
+    if (dev_ret == CL_SUCCESS && device_id != NULL) {
+      LOGD("cl_get_device_id: FOUND device on platform[%zu]", i);
       cl_print_info(platform_ids[i], device_id);
       return device_id;
+    } else if (dev_ret != CL_DEVICE_NOT_FOUND) {
+      LOGE("cl_get_device_id: platform[%zu] unexpected error ret=%d", i, dev_ret);
     }
   }
-  LOGE("No valid openCL platform found");
+  
+  LOGE("cl_get_device_id: FAIL - No valid OpenCL device found for device_type=%lu", (unsigned long)device_type);
   assert(0);
   return nullptr;
 }
@@ -89,7 +111,16 @@ cl_device_id cl_get_device_id_optional(cl_device_type device_type) {
 }
 
 cl_context cl_create_context(cl_device_id device_id) {
-  return CL_CHECK_ERR(clCreateContext(NULL, 1, &device_id, NULL, NULL, &err));
+  LOGD("cl_create_context: START device_id=%p", (void*)device_id);
+  cl_int err;
+  cl_context ctx = clCreateContext(NULL, 1, &device_id, NULL, NULL, &err);
+  if (!ctx || err != CL_SUCCESS) {
+    LOGE("cl_create_context: FAILED err=%d ctx=%p", err, (void*)ctx);
+    assert(0);
+    return nullptr;
+  }
+  LOGD("cl_create_context: SUCCESS ctx=%p", (void*)ctx);
+  return ctx;
 }
 
 void cl_release_context(cl_context context) {
@@ -97,6 +128,7 @@ void cl_release_context(cl_context context) {
 }
 
 cl_command_queue cl_create_command_queue(cl_context ctx, cl_device_id device_id) {
+  LOGD("cl_create_command_queue: START ctx=%p device_id=%p", (void*)ctx, (void*)device_id);
   cl_int err;
 #if defined(__clang__)
 #pragma clang diagnostic push
@@ -111,7 +143,12 @@ cl_command_queue cl_create_command_queue(cl_context ctx, cl_device_id device_id)
 #elif defined(__GNUC__)
 #pragma GCC diagnostic pop
 #endif
-  CL_CHECK(err);
+  if (err != CL_SUCCESS) {
+    LOGE("cl_create_command_queue: FAILED err=%d", err);
+    assert(0);
+    return nullptr;
+  }
+  LOGD("cl_create_command_queue: SUCCESS q=%p", (void*)q);
   return q;
 }
 

@@ -445,64 +445,74 @@ static void publish_thumbnail(PubMaster *pm, const ThumbnailJob &job) {
 
 void camerad_thread() {
   camerad_cycle_count++;
-  LOGD("========== camerad_thread START cycle=%d ==========", camerad_cycle_count);
+  LOG("========== camerad_thread START cycle=%d ==========", camerad_cycle_count);
 
   cl_device_id device_id = nullptr;
   cl_context context = nullptr;
 
+  LOG("camerad_thread cycle=%d: Looking for OpenCL device...", camerad_cycle_count);
   cl_device_id cl_device = cl_get_device_id_optional(CL_DEVICE_TYPE_DEFAULT);
+  LOG("camerad_thread cycle=%d: cl_get_device_id_optional returned %p", camerad_cycle_count, (void*)cl_device);
+  
   if (cl_device) {
     cl_platform_id device_platform;
     if (clGetDeviceInfo(cl_device, CL_DEVICE_PLATFORM, sizeof(cl_platform_id), &device_platform, NULL) == CL_SUCCESS) {
       const cl_context_properties props[] = {CL_CONTEXT_PLATFORM, (cl_context_properties)device_platform, 0};
       cl_int cl_err = CL_INVALID_VALUE;
+      LOG("camerad_thread cycle=%d: Creating OpenCL context...", camerad_cycle_count);
       context = clCreateContext(props, 1, &cl_device, NULL, NULL, &cl_err);
+      LOG("camerad_thread cycle=%d: clCreateContext returned ctx=%p err=%d", camerad_cycle_count, (void*)context, cl_err);
       if (context && cl_err == CL_SUCCESS) {
         device_id = cl_device;
-        LOGD("camerad_thread cycle=%d: OpenCL context created", camerad_cycle_count);
+        LOG("camerad_thread cycle=%d: OpenCL context created SUCCESS - device_id=%p ctx=%p", camerad_cycle_count, (void*)device_id, (void*)context);
       } else {
         if (context) {
           clReleaseContext(context);
           context = nullptr;
         }
+        LOGE("camerad_thread cycle=%d: OpenCL context creation FAILED err=%d", camerad_cycle_count, cl_err);
         LOGW("OpenCL context creation failed (err=%d), running without OpenCL", cl_err);
       }
+    } else {
+      LOGE("camerad_thread cycle=%d: clGetDeviceInfo for platform FAILED", camerad_cycle_count);
     }
   } else {
+    LOGE("camerad_thread cycle=%d: No OpenCL device found (cl_get_device_id_optional returned nullptr)", camerad_cycle_count);
     LOGW("No OpenCL device found, running without OpenCL");
   }
 
   {
     MultiCameraState cameras = {};
-    LOGD("camerad_thread cycle=%d: MultiCameraState created", camerad_cycle_count);
+    LOG("camerad_thread cycle=%d: MultiCameraState created", camerad_cycle_count);
 
+    LOG("camerad_thread cycle=%d: Creating VisionIpcServer with device_id=%p ctx=%p", camerad_cycle_count, (void*)device_id, (void*)context);
     VisionIpcServer vipc_server("camerad", device_id, context);
-    LOGD("camerad_thread cycle=%d: VisionIpcServer created", camerad_cycle_count);
+    LOG("camerad_thread cycle=%d: VisionIpcServer created", camerad_cycle_count);
 
-    LOGD("camerad_thread cycle=%d: calling cameras_open", camerad_cycle_count);
+    LOG("camerad_thread cycle=%d: calling cameras_open", camerad_cycle_count);
     cameras_open(&cameras);
-    LOGD("camerad_thread cycle=%d: cameras_open DONE", camerad_cycle_count);
+    LOG("camerad_thread cycle=%d: cameras_open DONE", camerad_cycle_count);
 
-    LOGD("camerad_thread cycle=%d: calling cameras_init", camerad_cycle_count);
+    LOG("camerad_thread cycle=%d: calling cameras_init", camerad_cycle_count);
     cameras_init(&vipc_server, &cameras, device_id, context);
-    LOGD("camerad_thread cycle=%d: cameras_init DONE", camerad_cycle_count);
+    LOG("camerad_thread cycle=%d: cameras_init DONE", camerad_cycle_count);
 
-    LOGD("camerad_thread cycle=%d: starting thumbnail worker", camerad_cycle_count);
+    LOG("camerad_thread cycle=%d: starting thumbnail worker", camerad_cycle_count);
     start_thumbnail_worker(cameras.pm);
-    LOGD("camerad_thread cycle=%d: thumbnail worker started", camerad_cycle_count);
+    LOG("camerad_thread cycle=%d: thumbnail worker started", camerad_cycle_count);
 
-    LOGD("camerad_thread cycle=%d: starting vipc server", camerad_cycle_count);
+    LOG("camerad_thread cycle=%d: starting vipc server", camerad_cycle_count);
     vipc_server.start_listener();
-    LOGD("camerad_thread cycle=%d: vipc server started", camerad_cycle_count);
+    LOG("camerad_thread cycle=%d: vipc server started", camerad_cycle_count);
 
-    LOGD("camerad_thread cycle=%d: calling cameras_run", camerad_cycle_count);
+    LOG("camerad_thread cycle=%d: calling cameras_run", camerad_cycle_count);
     cameras_run(&cameras);
-    LOGD("camerad_thread cycle=%d: cameras_run returned", camerad_cycle_count);
+    LOG("camerad_thread cycle=%d: cameras_run returned", camerad_cycle_count);
   }
   if (context) {
     CL_CHECK(clReleaseContext(context));
   }
-  LOGD("========== camerad_thread END cycle=%d ==========", camerad_cycle_count);
+  LOG("========== camerad_thread END cycle=%d ==========", camerad_cycle_count);
 }
 
 int open_v4l_by_name_and_index(const char name[], int index, int flags) {
