@@ -138,8 +138,8 @@ class Soundd:
     if quiet_mode and alert_type_name and "laneChangeBlocked" in alert_type_name:
       return
 
-    # Mute all alerts except posenetInvalid
-    if alert_type_name is None or "posenetInvalid" not in alert_type_name:
+    # Mute all alerts except posenetInvalid and SoftDisable (safety-critical takeover alert)
+    if alert_type_name is None or ("posenetInvalid" not in alert_type_name and "SoftDisable" not in alert_type_name):
       if new_alert != AudibleAlert.none:
         return
 
