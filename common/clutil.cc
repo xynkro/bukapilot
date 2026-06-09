@@ -3,6 +3,7 @@
 #include <cassert>
 #include <iostream>
 #include <memory>
+#include <unistd.h>
 
 #include "common/util.h"
 #include "common/swaglog.h"
@@ -56,21 +57,39 @@ void cl_print_build_errors(cl_program program, cl_device_id device) {
 }  // namespace
 
 cl_device_id cl_get_device_id(cl_device_type device_type) {
-  cl_uint num_platforms = 0;
-  CL_CHECK(clGetPlatformIDs(0, NULL, &num_platforms));
-  std::unique_ptr<cl_platform_id[]> platform_ids = std::make_unique<cl_platform_id[]>(num_platforms);
-  CL_CHECK(clGetPlatformIDs(num_platforms, &platform_ids[0], NULL));
+  LOGD("cl_get_device_id: START - device_type=%lu", (unsigned long)device_type);
+  const int max_retries = 10;
+  for (int retry = 0; retry < max_retries; ++retry) {
+    cl_uint num_platforms = 0;
+    cl_int ret = clGetPlatformIDs(0, NULL, &num_platforms);
+    if (ret == CL_SUCCESS && num_platforms > 0) {
+      std::unique_ptr<cl_platform_id[]> platform_ids = std::make_unique<cl_platform_id[]>(num_platforms);
+      ret = clGetPlatformIDs(num_platforms, &platform_ids[0], NULL);
+      if (ret != CL_SUCCESS) continue;
+      for (size_t i = 0; i < num_platforms; ++i) {
+        std::string platform_name = get_platform_info(platform_ids[i], CL_PLATFORM_NAME);
+        LOGD("cl_get_device_id: checking platform[%zu] '%s'", i, platform_name.c_str());
 
-  for (size_t i = 0; i < num_platforms; ++i) {
-    LOGD("platform[%zu] CL_PLATFORM_NAME: %s", i, get_platform_info(platform_ids[i], CL_PLATFORM_NAME).c_str());
+        cl_device_id device_id = NULL;
+        cl_int dev_ret = clGetDeviceIDs(platform_ids[i], device_type, 1, &device_id, NULL);
+        LOGD("cl_get_device_id: platform[%zu] clGetDeviceIDs ret=%d device_id=%p", i, dev_ret, (void*)device_id);
+        if (dev_ret == CL_SUCCESS && device_id != NULL) {
+          LOGD("cl_get_device_id: FOUND device on platform[%zu]", i);
+          cl_print_info(platform_ids[i], device_id);
+          return device_id;
+        } else if (dev_ret != CL_DEVICE_NOT_FOUND) {
+          LOGE("cl_get_device_id: platform[%zu] unexpected error ret=%d", i, dev_ret);
+          break;
+        }
+      }
+    }
 
-    // Get first device
-    if (cl_device_id device_id = NULL; clGetDeviceIDs(platform_ids[i], device_type, 1, &device_id, NULL) == 0 && device_id) {
-      cl_print_info(platform_ids[i], device_id);
-      return device_id;
+    if (retry < max_retries - 1) {
+      usleep(200000);
     }
   }
-  LOGE("No valid openCL platform found");
+
+  LOGE("cl_get_device_id: FAIL - No valid OpenCL device found for device_type=%lu", (unsigned long)device_type);
   assert(0);
   return nullptr;
 }
