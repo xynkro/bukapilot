@@ -40,4 +40,4 @@ class CAR(Platforms):
 
 CAR_INFO = CAR.create_carinfo_map()
 DBC = CAR.create_dbc_map()
-ACCEL_MULT = defaultdict(lambda: 1, {CAR.ATTO3: 25, CAR.M6: 25, CAR.SEAL: 1, CAR.SEALION7: 1})
+ACCEL_MULT = defaultdict(lambda: 1, {CAR.ATTO3: 26, CAR.M6: 25, CAR.SEAL: 1, CAR.SEALION7: 1})  # ATTO3 25->26 (match 10.1.0)

@@ -2,11 +2,11 @@ const SteeringLimits BYD_STEERING_LIMITS = {
   .angle_deg_to_can = 10,
   .angle_rate_up_lookup = {
     {0., 5., 15.},
-    {6., 4., 3.}
+    {7., 6., 5.}
   },
   .angle_rate_down_lookup = {
     {0., 5., 15.},
-    {8., 6., 4.}
+    {8., 8., 8.}
   },
 };
 

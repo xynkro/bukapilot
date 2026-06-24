@@ -23,8 +23,8 @@ def lowpass_1pole(x, y_prev):
 
 
 class CarControllerParams():
-  ANGLE_RATE_LIMIT_UP = AngleRateLimit(speed_bp=[0., 5., 15.], angle_v=[6., 3., 1.])
-  ANGLE_RATE_LIMIT_DOWN = AngleRateLimit(speed_bp=[0., 5., 15.], angle_v=[8., 7., 4.])
+  ANGLE_RATE_LIMIT_UP = AngleRateLimit(speed_bp=[0., 5., 15.], angle_v=[7., 6., 5.])   # raised [6,3,1]->[7,6,5]: anticipatory turn-in (Phase 2)
+  ANGLE_RATE_LIMIT_DOWN = AngleRateLimit(speed_bp=[0., 5., 15.], angle_v=[8., 8., 8.])  # raised [8,7,4]->[8,8,8]
 
   def __init__(self, CP):
     pass

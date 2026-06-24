@@ -11,9 +11,9 @@ RADAR_FREQ_HZ = 20
 # --- Temporal filtering / hysteresis ---
 # Aggressive persistence to prevent track churn and Kalman filter resets
 # Higher requirements for stability reduce false track switches
-CONF_ON = 0.75         # Reasonable confidence threshold
+CONF_ON = 0.70         # loosened 0.75->0.70 (10.0.3): earlier acquisition of bikes/straddlers
 CONF_OFF = 0.50
-VALID_CNT_ON = 5       # Require 5 frames to be stable (increased from 3 to prevent track churn)
+VALID_CNT_ON = 2       # loosened 5->2 (10.0.3): trust tracks sooner (tradeoff: more phantom braking)
 # Keep tracks alive for much longer to prevent Kalman filter resets
 # When tracks briefly fail filtering, keep them published to maintain continuity
 MISS_MAX = 15          # Delete tracks after 15 missed frames (increased from 4 for much better persistence)
@@ -25,7 +25,7 @@ DREL_MAX = 200.0
 # Filter side-lane vehicles to prevent phantom braking
 # Balanced at 1.5m - allows legitimate vehicles while filtering obvious side-lane vehicles
 # Typical lane width ~3.5m, so 1.5m = center ~43% (reasonable for lane keeping)
-YREL_ABS_MAX = 1.5     # Balanced: filter obvious side-lane vehicles (>1.5m) while allowing legitimate vehicles
+YREL_ABS_MAX = 6.0     # loosened 1.5->6.0 (10.0.3): accept side/straddling vehicles
 VREL_ABS_MAX = 60.0
 AREL_ABS_MAX = 12.0
 
