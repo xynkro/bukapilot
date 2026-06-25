@@ -31,16 +31,16 @@ class CarInterface(CarInterfaceBase):
     ret.lateralParams.torqueBP, ret.lateralParams.torqueV = [[0.0], [530]]
     ret.lateralTuning.pid.kpBP = [0.0, 5.0, 20.0]
     ret.lateralTuning.pid.kiBP = [0.0, 5.0, 20.0]
-    ret.lateralTuning.pid.kf = 0.00015
+    ret.lateralTuning.pid.kf = 0.00018
     ret.wheelSpeedFactor = 0.66
 
     if candidate == CAR.BYD_ATTO3:
-      ret.lateralTuning.pid.kiV, ret.lateralTuning.pid.kpV = [[0.52, 0.43, 0.32], [1.5, 1.4, 1.1]]
+      ret.lateralTuning.pid.kiV, ret.lateralTuning.pid.kpV = [[0.52, 0.43, 0.32], [1.8, 1.65, 1.35]]
     elif candidate == CAR.BYD_M6:
-      ret.lateralTuning.pid.kiV, ret.lateralTuning.pid.kpV = [[0.52, 0.43, 0.32], [1.5, 1.4, 1.1]]
+      ret.lateralTuning.pid.kiV, ret.lateralTuning.pid.kpV = [[0.52, 0.43, 0.32], [1.8, 1.65, 1.35]]
       ret.safetyConfigs[0].safetyParam = 3
     elif candidate in (CAR.BYD_SEAL, CAR.BYD_SEALION7, CAR.BYD_SHARK):
-      ret.lateralTuning.pid.kiV, ret.lateralTuning.pid.kpV = [[0.52, 0.43, 0.32], [1.5, 1.4, 1.1]]
+      ret.lateralTuning.pid.kiV, ret.lateralTuning.pid.kpV = [[0.52, 0.43, 0.32], [1.8, 1.65, 1.35]]
       ret.safetyConfigs[0].safetyParam = 2
       ret.openpilotLongitudinalControl = False
       ret.radarUnavailable = True
@@ -50,7 +50,7 @@ class CarInterface(CarInterfaceBase):
       ret.safetyModel = car.CarParams.SafetyModel.noOutput
 
     ret.startingState = True
-    ret.startAccel = 3.0
+    ret.startAccel = 2.0
     ret.minEnableSpeed = -1
     ret.enableBsm = True
     ret.stoppingDecelRate = 0.2
