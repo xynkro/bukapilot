@@ -18,7 +18,7 @@ RADAR_FREQ_HZ = 20
 # Higher requirements for stability reduce false track switches
 CONF_ON = 0.70         # Reasonable confidence threshold
 CONF_OFF = 0.50
-VALID_CNT_ON = 2       # Require 5 frames to be stable (increased from 3 to prevent track churn)
+VALID_CNT_ON = 1       # Require 5 frames to be stable (increased from 3 to prevent track churn)
 # Keep tracks alive for much longer to prevent Kalman filter resets
 # When tracks briefly fail filtering, keep them published to maintain continuity
 # Delete tracks after 15 missed frames; keeps tracks alive ~750ms (15*50ms) when filtering fails
@@ -216,8 +216,8 @@ class RadarInterface(RadarInterfaceBase):
       # Require higher confidence for vehicles near the edge (even if within threshold)
       # This adds extra filtering for vehicles that are close to the lateral limit
       conf_required = CONF_ON
-      if abs(yRel) > 1.0:  # More than 1.0m to side (67% of 1.5m threshold)
-        conf_required = max(CONF_ON, 0.85)  # Require higher confidence (85%)
+      if abs(yRel) > 3.0:  # More than 1.0m to side (67% of 1.5m threshold)
+        conf_required = max(CONF_ON, 0.72)  # Require higher confidence (85%)
 
       good = plausible and (conf >= conf_required)
 
