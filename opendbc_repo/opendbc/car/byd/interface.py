@@ -50,10 +50,10 @@ class CarInterface(CarInterfaceBase):
       ret.safetyModel = car.CarParams.SafetyModel.noOutput
 
     ret.startingState = True
-    ret.startAccel = 2.0
+    ret.startAccel = 3.0
     ret.minEnableSpeed = -1
     ret.enableBsm = True
-    ret.stoppingDecelRate = 0.1
+    ret.stoppingDecelRate = 0.2
     ret.longitudinalActuatorDelay = 0.3
 
     return ret
