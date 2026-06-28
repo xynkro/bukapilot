@@ -79,6 +79,20 @@ def get_T_FOLLOW(personality=log.LongitudinalPersonality.standard):
   else:
     raise NotImplementedError("Longitudinal personality not supported")
 
+def get_accel_personality_factor(personality=log.LongitudinalPersonality.standard):
+  # Mood-selector accel scaling: multiplies the planner's max-accel cap.
+  # NOTE: STOP_DISTANCE and COMFORT_BRAKE are compiled into the acados MPC as
+  # symbolic build-time constants, so they CANNOT vary per personality at runtime.
+  # Only T_FOLLOW (a live MPC param) and this accel cap are runtime-tunable.
+  if personality==log.LongitudinalPersonality.relaxed:
+    return 0.75
+  elif personality==log.LongitudinalPersonality.standard:
+    return 1.0
+  elif personality==log.LongitudinalPersonality.aggressive:
+    return 1.15
+  else:
+    raise NotImplementedError("Longitudinal personality not supported")
+
 def get_stopped_equivalence_factor(v_lead):
   return (v_lead**2) / (2 * COMFORT_BRAKE)
 
