@@ -30,7 +30,7 @@ DREL_MAX = 200.0
 # Filter side-lane vehicles to prevent phantom braking
 # Balanced at 1.5m - allows legitimate vehicles while filtering obvious side-lane vehicles
 # Typical lane width ~3.5m, so 1.5m = center ~43% (reasonable for lane keeping)
-YREL_ABS_MAX = 2.0     # Balanced: filter obvious side-lane vehicles (>1.5m) while allowing legitimate vehicles
+YREL_ABS_MAX = 3.0     # Balanced: filter obvious side-lane vehicles (>1.5m) while allowing legitimate vehicles
 VREL_ABS_MAX = 60.0
 AREL_ABS_MAX = 12.0
 
