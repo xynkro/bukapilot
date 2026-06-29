@@ -118,7 +118,7 @@ DBC = CAR.create_dbc_map()
 ACCEL_MULT = defaultdict(
   lambda: 1,
   {
-    CAR.BYD_ATTO3: 26,
+    CAR.BYD_ATTO3: 18,
     CAR.BYD_M6: 26,
     CAR.BYD_SEAL: 1,
     CAR.BYD_SEALION7: 1,
@@ -130,7 +130,7 @@ HUD_MULTIPLIER = 1.12
 class CarControllerParams:
   STEER_ANGLE_MAX = 120.0  # deg
   ANGLE_RATE_LIMIT_UP = AngleRateLimit(speed_bp=[0., 5., 15.], angle_v=[6., 4., 3.])
-  ANGLE_RATE_LIMIT_DOWN = AngleRateLimit(speed_bp=[0., 5., 15.], angle_v=[8., 6., 4.])
+  ANGLE_RATE_LIMIT_DOWN = AngleRateLimit(speed_bp=[0., 5., 15.], angle_v=[8., 6., 6.])
   ANGLE_LIMITS = AngleSteeringLimits(STEER_ANGLE_MAX, ANGLE_RATE_LIMIT_UP, ANGLE_RATE_LIMIT_DOWN)
 
   def __init__(self, CP):

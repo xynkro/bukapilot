@@ -19,7 +19,7 @@ class CarInterface(CarInterfaceBase):
     ret.safetyConfigs[0].safetyParam = 1
 
     ret.steerControlType = car.CarParams.SteerControlType.angle
-    ret.steerLimitTimer = 0.6
+    ret.steerLimitTimer = 0.2
     ret.steerActuatorDelay = 0.01
 
     ret.lateralTuning.init("pid")
@@ -32,7 +32,7 @@ class CarInterface(CarInterfaceBase):
     ret.lateralTuning.pid.kpBP = [0.0, 5.0, 20.0]
     ret.lateralTuning.pid.kiBP = [0.0, 5.0, 20.0]
     ret.lateralTuning.pid.kf = 0.00015
-    ret.wheelSpeedFactor = 0.66
+    ret.wheelSpeedFactor = 0.695
 
     if candidate == CAR.BYD_ATTO3:
       ret.lateralTuning.pid.kiV, ret.lateralTuning.pid.kpV = [[0.52, 0.43, 0.32], [1.5, 1.4, 1.1]]
