@@ -19,7 +19,7 @@ class CarInterface(CarInterfaceBase):
     ret.safetyConfigs[0].safetyParam = 1
 
     ret.steerControlType = car.CarParams.SteerControlType.angle
-    ret.steerLimitTimer = 0.2
+    ret.steerLimitTimer = 0.6
     ret.steerActuatorDelay = 0.01
 
     ret.lateralTuning.init("pid")
