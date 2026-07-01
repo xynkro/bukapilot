@@ -13,6 +13,7 @@ from openpilot.selfdrive.controls.lib.longcontrol import LongCtrlState
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import LongitudinalMpc
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import T_IDXS as T_IDXS_MPC
 from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N, get_accel_from_plan
+from openpilot.selfdrive.controls.lib.vtsc import compute_curve_speed_target, NO_CONSTRAINT_V
 from openpilot.selfdrive.car.cruise import V_CRUISE_MAX, V_CRUISE_UNSET
 from openpilot.common.swaglog import cloudlog
 
@@ -81,6 +82,10 @@ class LongitudinalPlanner:
     self.a_desired_trajectory = np.zeros(CONTROL_N)
     self.j_desired_trajectory = np.zeros(CONTROL_N)
     self.solverExecutionTime = 0.0
+
+    # --- VTSC SHADOW LOGGER (log-only; actuates nothing) -------------------
+    # Throttle counter so we don't spam the log every 50 Hz cycle.
+    self._vtsc_log_counter = 0
 
   @staticmethod
   def parse_model(model_msg):
@@ -214,6 +219,70 @@ class LongitudinalPlanner:
       accel_clip[idx] = np.clip(accel_clip[idx], self.prev_accel_clip[idx] - 0.05, self.prev_accel_clip[idx] + 0.05)
     self.output_a_target = np.clip(output_a_target, accel_clip[0], accel_clip[1])
     self.prev_accel_clip = accel_clip
+
+    # ---------------------------------------------------------------------
+    # VTSC SHADOW LOGGER  (SHADOW-MODE-ONLY — computes + LOGS, never actuates)
+    # ---------------------------------------------------------------------
+    # Computes a would-be comfortable curve-entry speed from the model's
+    # predicted yaw-rate/velocity trajectory and LOGS it. It does NOT touch
+    # v_cruise, accel_clip, the MPC target, self.output_a_target, or anything
+    # else the car acts on. Everything is wrapped so a logger bug can never
+    # crash or slow the control loop; on ANY failure we simply skip logging.
+    try:
+      self._vtsc_shadow_log(sm, v_cruise, v_ego)
+    except Exception:
+      # Never let a shadow-only logger disturb the control loop.
+      cloudlog.exception("vtsc_shadow_log failed (ignored)")
+
+  def _vtsc_shadow_log(self, sm, v_cruise, v_ego):
+    """
+    SHADOW-MODE-ONLY. Reads modelV2, computes a would-be curve-speed target via
+    the pure estimator, and cloudlogs it at a throttled cadence. Actuates NOTHING.
+
+    Called inside a try/except in update(); this method must have no side effects
+    beyond incrementing its own throttle counter and emitting a log line.
+    """
+    model = sm['modelV2']
+    orient_rate = model.orientationRate
+    velocity = model.velocity
+
+    # Pull plain lists out of cereal (the pure fn takes no cereal types).
+    # .zStd may be empty -> pass None so the estimator treats std as unavailable.
+    yaw_rate_z = list(orient_rate.z)
+    vel_x = list(velocity.x)
+    t_idxs = ModelConstants.T_IDXS
+    z_std = list(orient_rate.zStd)
+    if len(z_std) < len(yaw_rate_z):
+      z_std = None
+
+    res = compute_curve_speed_target(yaw_rate_z, vel_x, t_idxs, z_std)
+
+    # "Would this reduce the current cruise target?" — pure comparison, no write.
+    v_target = res["v_target"]
+    would_reduce_cruise = bool(res["would_reduce"] and v_target < float(v_cruise))
+
+    # Throttle: log every ~1 s (planner runs at ~1/DT_MDL Hz). Always log the
+    # first cycle of an active constraint so real curve events aren't missed.
+    self._vtsc_log_counter += 1
+    period = max(1, int(round(1.0 / DT_MDL)))  # ~50 cycles ~= 1 s at DT_MDL=0.02
+    should_log = (self._vtsc_log_counter % period == 0) or would_reduce_cruise
+    if not should_log:
+      return
+
+    # NOTE: v_target == NO_CONSTRAINT_V is the "no curve constraint" sentinel.
+    cloudlog.event(
+      "vtsc_shadow",
+      v_target=float(v_target),
+      is_constraint=bool(v_target < NO_CONSTRAINT_V),
+      would_reduce_cruise=would_reduce_cruise,
+      v_cruise=float(v_cruise),
+      v_ego=float(v_ego),
+      limiting_curvature=float(res["limiting_curvature"]),
+      limiting_t=float(res["limiting_t"]),
+      limiting_std=float(res["limiting_std"]),   # NaN if model gave no zStd
+      n_considered=int(res["n_considered"]),
+      reason=res["reason"],
+    )
 
   def publish(self, sm, pm):
     plan_send = messaging.new_message('longitudinalPlan')
