@@ -125,7 +125,10 @@ class CarController(CarControllerBase):
     hand_on_wheel_warning = False
     if (self.frame % 2) == 0:
       apply_angle, steer_angle_limited = self._compute_apply_angle(CS, actuators, lat_active)
-      hand_on_wheel_warning = bool(lat_active and steer_angle_limited)
+      # Caspar: restore 10.0.3 behaviour (HAND_ON_WHEEL_WARNING was hardcoded 0).
+      # openpilot was driving the car's hands-on chime off steer-angle saturation,
+      # forcing wheel nudges that drop latActive mid-corner. Not a DM interlock.
+      hand_on_wheel_warning = False
       can_sends.append(
         create_can_steer_command(
           self.packer,
