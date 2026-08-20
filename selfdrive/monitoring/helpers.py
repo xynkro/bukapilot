@@ -34,13 +34,13 @@ class DRIVER_MONITOR_SETTINGS:
     self._DISTRACTED_PRE_TIME_TILL_TERMINAL = 8.
     self._DISTRACTED_PROMPT_TIME_TILL_TERMINAL = 6.
 
-    self._FACE_THRESHOLD = 0.9
+    self._FACE_THRESHOLD = 0.7
     self._EYE_THRESHOLD = 0.85
     self._SG_THRESHOLD = 0.9
-    self._BLINK_THRESHOLD = 0.865
+    self._BLINK_THRESHOLD = 0.95
 
-    self._PHONE_THRESH = 0.75 if device_type == 'mici' else 0.4
-    self._PHONE_THRESH2 = 15.0
+    self._PHONE_THRESH = 0.9 if device_type == 'mici' else 0.9
+    self._PHONE_THRESH2 = 30.0
     self._PHONE_MAX_OFFSET = 0.06
     self._PHONE_MIN_OFFSET = 0.025
     self._PHONE_DATA_AVG = 0.05
