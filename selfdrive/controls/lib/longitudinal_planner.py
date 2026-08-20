@@ -38,7 +38,7 @@ DANGER_HOLD_SECONDS = 0.2
 # v_cruise, never issues a brake command, and never overrides the gas pedal.
 VTSC_ENABLED = True
 VTSC_MIN_ACTIVE_SPEED = 8.3     # m/s (~30 km/h); no curve limiting below this
-VTSC_MAX_REDUCTION_FRAC = 0.35  # hard floor: never request below 65% of the set speed
+VTSC_MAX_REDUCTION_FRAC = 0.50  # hard floor: never request below 50% of the set speed
 VTSC_RATE_DOWN = 2.5            # m/s per s the target may FALL (eases in, still enough
                                 # authority to actually make a corner inside the 6 s window)
 VTSC_RATE_UP = 1.2              # m/s per s the target may RISE (smooth corner-exit release)
