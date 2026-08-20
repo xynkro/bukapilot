@@ -162,18 +162,11 @@ class CarController(CarControllerBase):
         if CS.out.standstill and CC.enabled and (self.frame % BUTTON_KEEPALIVE_FRAMES == 0):
           can_sends.append(send_buttons(self.packer, 1, 0, self.button_send_bus))
 
-    if self.CP.carFingerprint in (CAR.BYD_ATTO3, CAR.BYD_M6, CAR.BYD_SEAL, CAR.BYD_SEALION7, CAR.BYD_SHARK):
-      # Atto: always keep fake hands-on torque (no 50/150 off-cycle) and TX at ~50Hz.
-      # Stock Atto nags HOW immediately if MAIN_TORQUE drops while 0x1FC is blocked.
-      if self.CP.carFingerprint == CAR.BYD_ATTO3:
-        spoof_active = True
-        send_spoof = (self.frame % 2) == 0
-      else:
-        cycle_position = self.frame % SPOOF_CYCLE_FRAMES
-        spoof_active = cycle_position < SPOOF_DURATION_FRAMES
-        send_spoof = (self.frame % 5) == 0
+    if self.CP.carFingerprint in (CAR.BYD_M6, CAR.BYD_SEAL, CAR.BYD_SEALION7, CAR.BYD_SHARK):
+      cycle_position = self.frame % SPOOF_CYCLE_FRAMES
+      spoof_active = cycle_position < SPOOF_DURATION_FRAMES
 
-      if send_spoof:
+      if (self.frame % 5) == 0:
         can_sends.append(
           create_steering_torque_spoof_camera(self.packer, lat_active, CS.out.steeringTorque, spoof_active)
         )
