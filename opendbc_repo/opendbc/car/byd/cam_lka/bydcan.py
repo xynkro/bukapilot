@@ -110,7 +110,7 @@ def create_lkas_hud(packer, lat_active, lss_state, lss_alert, tsr,
     "SETTINGS": lss_alert,
     "TSR_STATUS": passthrough_from_chunk,
     "SET_ME_XFF": ahb_from_chunk,
-    "HAND_ON_WHEEL_WARNING": 0,  # Caspar: hardcoded OFF (as in 10.0.3). Never assert the car's hands-on chime.
+    "HAND_ON_WHEEL_WARNING": bool(hand_on_wheel_warning),
     "TSR": tsr,
     "HMA": 0, # Could be red lane related (the first bit from the left)
     "PT2": pt2,
