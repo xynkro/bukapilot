@@ -37,7 +37,7 @@ class CarInterface(CarInterfaceBase):
     ret.lateralParams.torqueBP, ret.lateralParams.torqueV = [[0.0], [530]]
     ret.lateralTuning.pid.kpBP = [0.0, 5.0, 20.0]
     ret.lateralTuning.pid.kiBP = [0.0, 5.0, 20.0]
-    ret.lateralTuning.pid.kf = 0.00020
+    ret.lateralTuning.pid.kf = 0.00015
     ret.wheelSpeedFactor = 0.66
     ret.startingState = True
     ret.startAccel = 3.0
