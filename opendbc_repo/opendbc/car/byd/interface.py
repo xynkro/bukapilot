@@ -80,6 +80,11 @@ class CarInterface(CarInterfaceBase):
       ret.dashcamOnly = True
       ret.safetyModel = car.CarParams.SafetyModel.noOutput
 
+    # Caspar diagnostic: FORCE radar + openpilot longitudinal ON for every BYD variant,
+    # so a fingerprint mismatch can never silently disable the Atto3 radar.
+    ret.radarUnavailable = False
+    ret.openpilotLongitudinalControl = True
+
     return ret
 
   def _update(self, c):
