@@ -17,7 +17,7 @@ from opendbc.car.lateral import apply_std_steer_angle_limits
 
 STEER_LOWPASS_HZ = 2
 STEER_DT = 0.02
-MAX_STEER_ANGLE_OFFSET_DEG = 10
+MAX_STEER_ANGLE_OFFSET_DEG = 15
 # Degrees: warn on HUD when command hits angle safety envelope (meas offset or global max).
 STEER_ANGLE_LIMIT_WARN_EPS_DEG = 0.08
 # Seal 6 angle path: hard-drop STEER_REQ on driver override (MAIN_TORQUE only).
