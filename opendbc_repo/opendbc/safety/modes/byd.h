@@ -203,7 +203,8 @@ static safety_config byd_init(uint16_t param) {
 
   cfg = BUILD_SAFETY_CFG(byd_rx_checks, BYD_TX_MSGS);
   if (param == 1U) {
-    /* default cfg already selected */
+    // Atto 3: ACC_CMD(814) engage + block PT->cam 0x1FC; cam_lka TX's spoof on bus 2.
+    byd_steering_torque_spoof = true;
   } else if (param == 2U) {
     static RxCheck byd_rx_checks_alt[] = {
       {.msg = {{287, 0, 5, 100U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, {0}, {0}}},
