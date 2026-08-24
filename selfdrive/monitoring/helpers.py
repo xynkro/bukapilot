@@ -39,7 +39,7 @@ class DRIVER_MONITOR_SETTINGS:
     self._SG_THRESHOLD = 0.9
     self._BLINK_THRESHOLD = 0.865
 
-    self._PHONE_THRESH = 0.75 if device_type == 'mici' else 0.4
+    self._PHONE_THRESH = 1.0
     self._PHONE_THRESH2 = 15.0
     self._PHONE_MAX_OFFSET = 0.06
     self._PHONE_MIN_OFFSET = 0.025
@@ -85,8 +85,8 @@ class DRIVER_MONITOR_SETTINGS:
     self._RECOVERY_FACTOR_MAX = 5.  # relative to minus step change
     self._RECOVERY_FACTOR_MIN = 1.25  # relative to minus step change
 
-    self._MAX_TERMINAL_ALERTS = 3  # not allowed to engage after 3 terminal alerts
-    self._MAX_TERMINAL_DURATION = int(30 / self._DT_DMON)  # not allowed to engage after 30s of terminal alerts
+    self._MAX_TERMINAL_ALERTS = 10  # not allowed to engage after 3 terminal alerts
+    self._MAX_TERMINAL_DURATION = int(60 / self._DT_DMON)  # not allowed to engage after 30s of terminal alerts
 
 class DistractedType:
 
