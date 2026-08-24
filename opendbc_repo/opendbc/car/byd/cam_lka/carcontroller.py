@@ -15,7 +15,7 @@ from opendbc.car.byd.values import CarControllerParams
 from opendbc.car.interfaces import CarControllerBase
 from opendbc.car.lateral import apply_std_steer_angle_limits
 
-STEER_LOWPASS_HZ = 1.5
+STEER_LOWPASS_HZ = 2
 STEER_DT = 0.02
 MAX_STEER_ANGLE_OFFSET_DEG = 15
 # Degrees: warn on HUD when command hits angle safety envelope (meas offset or global max).
