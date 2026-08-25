@@ -52,6 +52,21 @@ VTSC_TARGET_LAT_ACCEL = 4.5  # m/s^2
 NO_CONSTRAINT_V = 1.0e9  # m/s (effectively +inf, but JSON/log friendly)
 
 
+def _percentile(sorted_vals, pct):
+  """Linear-interpolation percentile over a PRE-SORTED ascending list. No numpy, so this
+  module stays importable/testable anywhere. Matches numpy.percentile's default method."""
+  if not sorted_vals:
+    return None
+  if len(sorted_vals) == 1:
+    return sorted_vals[0]
+  k = (len(sorted_vals) - 1) * (max(0.0, min(100.0, pct)) / 100.0)
+  lo = int(math.floor(k))
+  hi = int(math.ceil(k))
+  if lo == hi:
+    return sorted_vals[lo]
+  return sorted_vals[lo] * (hi - k) + sorted_vals[hi] * (k - lo)
+
+
 def _default_params():
   """Defaults so tests / callers can pass a partial dict (or None)."""
   return {
@@ -62,6 +77,11 @@ def _default_params():
     "max_std":            0.20,   # rad/s: discard yaw-rate points more uncertain than this
     "vel_floor":          1.0,    # m/s: floor used in curvature denominator (== MIN_SPEED)
     "curv_eps":           1e-6,   # guard against divide-by-zero in sqrt
+    "curv_percentile":    97.0,   # use the Nth-percentile curvature, not the strict max.
+                                  # sunnypilot/SCC-Vision does the same (np.percentile(...,97)):
+                                  # a single noisy model point must not define the whole target.
+                                  # Our max_std gate cannot be relied on for this because cereal
+                                  # often leaves orientationRate.zStd empty.
   }
 
 
@@ -121,6 +141,7 @@ def compute_curve_speed_target(orientation_rate_z, velocity_x, t_idxs, stds=None
     "limiting_t":        -1.0,
     "min_v_safe":        NO_CONSTRAINT_V,
     "limiting_std":      float("nan"),
+    "max_pred_lat_acc":  0.0,
     "n_considered":      0,
     "reason":            "no_constraint",
   }
@@ -142,6 +163,7 @@ def compute_curve_speed_target(orientation_rate_z, velocity_x, t_idxs, stds=None
 
   target_lat_accel = float(p["target_lat_accel"])
   lookahead_s      = float(p["lookahead_s"])
+  curv_pct         = float(p["curv_percentile"])
   min_speed        = float(p["min_speed"])
   min_curv         = float(p["min_curvature"])
   max_std          = float(p["max_std"])
@@ -156,12 +178,7 @@ def compute_curve_speed_target(orientation_rate_z, velocity_x, t_idxs, stds=None
   if v_now < min_speed:
     return {**no_constraint, "valid": True, "reason": "below_min_speed"}
 
-  best_v = NO_CONSTRAINT_V
-  best_i = -1
-  best_curv = 0.0
-  best_t = -1.0
-  best_std = float("nan")
-  n_considered = 0
+  cand = []           # (abs_curv, lat_acc, idx, t, std) for every point that passes all gates
   saw_any_finite = False
 
   for i in range(n):
@@ -189,41 +206,45 @@ def compute_curve_speed_target(orientation_rate_z, velocity_x, t_idxs, stds=None
 
     # curvature = yaw_rate / speed ; floor the speed so we never blow up.
     denom = vi if vi > vel_floor else vel_floor
-    curv = zi / denom
-    abs_curv = abs(curv)
+    abs_curv = abs(zi / denom)
 
     # Minimum-curvature floor: ignore near-straight road.
     if abs_curv < min_curv:
       continue
 
-    # v_safe = sqrt(a_lat / |curv|). Guard the denominator.
-    v_safe = math.sqrt(target_lat_accel / max(abs_curv, curv_eps))
-
-    n_considered += 1
-    if v_safe < best_v:
-      best_v = v_safe
-      best_i = i
-      best_curv = abs_curv
-      best_t = ti
-      best_std = std_i
+    # predicted lateral accel at this point = |yaw_rate| * speed
+    cand.append((abs_curv, abs(zi) * denom, i, ti, std_i))
 
   if not saw_any_finite:
     return {**no_constraint, "reason": "all_nan"}
 
-  if best_i < 0:
+  if not cand:
     # Everything was straight / too-uncertain / out-of-window -> no reduction.
     return {**no_constraint, "valid": True, "reason": "no_tight_curve",
             "n_considered": 0}
+
+  # PERCENTILE, not strict max: one bad model point must not define the target.
+  curvs = sorted(c[0] for c in cand)
+  lat_accels = sorted(c[1] for c in cand)
+  curv_limit = _percentile(curvs, curv_pct)
+  max_pred_lat_acc = _percentile(lat_accels, curv_pct)
+
+  # Attribute the result to the real candidate closest to the percentile curvature,
+  # so limiting_index / _t / _std still point at an actual model point.
+  best = min(cand, key=lambda c: abs(c[0] - curv_limit))
+
+  best_v = math.sqrt(target_lat_accel / max(curv_limit, curv_eps))
 
   return {
     "v_target":          float(best_v),
     "would_reduce":      True,
     "valid":             True,
-    "limiting_index":    int(best_i),
-    "limiting_curvature": float(best_curv),
-    "limiting_t":        float(best_t),
+    "limiting_index":    int(best[2]),
+    "limiting_curvature": float(curv_limit),
+    "limiting_t":        float(best[3]),
     "min_v_safe":        float(best_v),
-    "limiting_std":      float(best_std),
-    "n_considered":      int(n_considered),
+    "limiting_std":      float(best[4]),
+    "max_pred_lat_acc":  float(max_pred_lat_acc),
+    "n_considered":      int(len(cand)),
     "reason":            "curve_found",
   }
