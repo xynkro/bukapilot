@@ -14,6 +14,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import Longi
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import T_IDXS as T_IDXS_MPC
 from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N, get_accel_from_plan
 from openpilot.selfdrive.controls.lib.vtsc import compute_curve_speed_target, VTSC_TARGET_LAT_ACCEL
+from openpilot.selfdrive.controls.lib.vtsc_learner import LatAccelLearner
 from openpilot.selfdrive.car.cruise import V_CRUISE_MAX, V_CRUISE_UNSET
 from openpilot.common.params import Params
 from openpilot.common.swaglog import cloudlog
@@ -129,6 +130,8 @@ class LongitudinalPlanner:
     self.vtsc_active = False
     self._vtsc_hold_until_t = 0.0
     self.vtsc_state = 'enabled'   # enabled | entering | turning | leaving
+    self.lat_learner = LatAccelLearner(params=self.params)
+    self._learner_save_frame = 0
 
     self.v_desired_trajectory = np.zeros(CONTROL_N)
     self.a_desired_trajectory = np.zeros(CONTROL_N)
@@ -181,7 +184,9 @@ class LongitudinalPlanner:
         params={"target_lat_accel": VTSC_TARGET_LAT_ACCEL},
       )
 
-      budget = VTSC_TARGET_LAT_ACCEL
+      # Learned budget: how hard THIS driver actually corners. Falls back to
+      # VTSC_TARGET_LAT_ACCEL until enough of the driver's own cornering is seen.
+      budget = self.lat_learner.budget
       max_pred_lat_acc = float(res.get("max_pred_lat_acc", 0.0))
       # what the car is pulling RIGHT NOW, from the controller's own curvature
       current_lat_acc = (v_ego ** 2) * abs(sm['controlsState'].curvature)
@@ -302,6 +307,23 @@ class LongitudinalPlanner:
 
     if force_slow_decel:
       v_cruise = 0.0
+
+    # Feed the lateral-accel learner. It only records while the DRIVER owns the speed
+    # (openpilot longitudinal inactive), so it learns his preference, not its own output.
+    try:
+      self.lat_learner.update(
+        v_ego,
+        sm['controlsState'].curvature,
+        long_active=sm['carControl'].longActive,
+        blinker=(sm['carState'].leftBlinker or sm['carState'].rightBlinker),
+        has_lead=sm['radarState'].leadOne.status,
+      )
+      self._learner_save_frame += 1
+      if self._learner_save_frame >= 600:      # ~30 s at 20 Hz; Params writes hit flash
+        self._learner_save_frame = 0
+        self.lat_learner.save()
+    except Exception:
+      cloudlog.exception("vtsc_learner_failed")
 
     v_cruise = self._apply_vtsc(sm, v_ego, v_cruise, reset_state)
 
