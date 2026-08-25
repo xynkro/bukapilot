@@ -201,7 +201,7 @@ HUD_MULTIPLIER = 1.12
 
 
 class CarControllerParams:
-  STEER_ANGLE_MAX = 120.0  # deg
+  STEER_ANGLE_MAX = 180.0  # deg
   ANGLE_RATE_LIMIT_UP = AngleRateLimit(speed_bp=[0., 5., 15.], angle_v=[8., 7., 6.])
   ANGLE_RATE_LIMIT_DOWN = AngleRateLimit(speed_bp=[0., 5., 15.], angle_v=[8., 7., 6.])
   ANGLE_LIMITS = AngleSteeringLimits(STEER_ANGLE_MAX, ANGLE_RATE_LIMIT_UP, ANGLE_RATE_LIMIT_DOWN)
