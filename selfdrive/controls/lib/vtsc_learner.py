@@ -41,8 +41,13 @@ MIN_BUCKETS = 4           # need this many populated buckets before trusting the
 MIN_SAMPLES = 20          # and this many samples in total
 
 # Never let a learned value wander somewhere unsafe, however odd the data.
+#
+# LEARNED_MAX must not exceed drive_helpers.MAX_LATERAL_ACCEL_NO_ROLL (currently 5.0):
+# that clamp is what the lateral controller can actually EXECUTE. Planning a corner entry
+# speed against a budget the car will never deliver systematically UNDER-slows -- the exact
+# failure the module docstring in vtsc.py warns about. Keep this <= the execution clamp.
 LEARNED_MIN = 2.5
-LEARNED_MAX = 5.5
+LEARNED_MAX = 5.0
 
 
 def _percentile(sorted_vals, pct):
