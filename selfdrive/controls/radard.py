@@ -176,7 +176,7 @@ def get_RadarState_from_vision(lead_msg: capnp._DynamicStructReader, v_ego: floa
 # This does NOT let radar invent a lead: the track must already have been vision-confirmed and
 # must still be present in `tracks`, which RadarD rebuilds every frame -- so the hold ends the
 # instant radar stops seeing it. A gantry can never exploit this: it is never vision-confirmed.
-LEAD_SUSTAIN_S = 3.0
+LEAD_SUSTAIN_S = 10.0
 
 
 def get_lead(v_ego: float, ready: bool, tracks: dict[int, Track], lead_msg: capnp._DynamicStructReader,
