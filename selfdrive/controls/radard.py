@@ -86,7 +86,17 @@ class Track:
     # NaN, so an unpopulated aRel would otherwise read as "lead accel = 0" and clamp away a
     # genuinely accelerating lead, making us follow sluggishly. Gating on < 0 means this can
     # only ever ADD braking sensitivity, never remove acceleration responsiveness.
-    if a_lead_meas is not None and math.isfinite(a_lead_meas) and a_lead_meas < 0.0:
+    # DEADBAND: only honour the measurement for GENUINE hard braking.
+    #
+    # Just below, aLeadTau collapses to 0 whenever |aLeadK| >= 0.5, which tells the MPC to
+    # project the lead's deceleration as PERMANENT (a_lead_traj = a_lead * exp(-tau*t^2/2)).
+    # Letting a mild measured lift (say -0.8) win the min() therefore flipped the MPC into
+    # "this lead is coming to a stop" and produced heavy braking where a light lift was all
+    # that was needed. The Kalman handles gentle decel perfectly well and keeps tau high.
+    # So: use the measurement only when the lead is really braking, which is the case the
+    # Kalman is genuinely slow at.
+    if (a_lead_meas is not None and math.isfinite(a_lead_meas)
+        and a_lead_meas < ALEAD_MEAS_MIN_DECEL):
       self.aLeadK = min(self.aLeadK, float(a_lead_meas))
 
     # Learn if constant acceleration
@@ -176,6 +186,11 @@ def get_RadarState_from_vision(lead_msg: capnp._DynamicStructReader, v_ego: floa
 # This does NOT let radar invent a lead: the track must already have been vision-confirmed and
 # must still be present in `tracks`, which RadarD rebuilds every frame -- so the hold ends the
 # instant radar stops seeing it. A gantry can never exploit this: it is never vision-confirmed.
+# Only trust the radar's directly-measured lead acceleration below this (i.e. real braking).
+# Above it the Kalman estimate is used, which avoids tripping the aLeadTau "permanent decel"
+# behaviour on mild lifts. See the note in Track.update().
+ALEAD_MEAS_MIN_DECEL = -1.5   # m/s^2
+
 LEAD_SUSTAIN_S = 10.0
 
 
