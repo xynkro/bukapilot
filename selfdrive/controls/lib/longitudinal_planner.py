@@ -13,6 +13,7 @@ from openpilot.selfdrive.controls.lib.longcontrol import LongCtrlState
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import LongitudinalMpc
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import T_IDXS as T_IDXS_MPC
 from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N, get_accel_from_plan
+from openpilot.selfdrive.controls.lib.vtsc import compute_curve_speed_target, VTSC_TARGET_LAT_ACCEL
 from openpilot.selfdrive.car.cruise import V_CRUISE_MAX, V_CRUISE_UNSET
 from openpilot.common.params import Params
 from openpilot.common.swaglog import cloudlog
@@ -31,6 +32,16 @@ DANGER_DECEL_VEGO_BP = [0.0, 10.0]
 DANGER_DECEL_VEGO_V = [-1.0, -1.2]
 DANGER_DECEL_RAMP_RATE = 1.0  # m/s^3, how quickly danger decel can ramp in
 DANGER_HOLD_SECONDS = 0.2
+
+# --- VTSC: Vision Turn Speed Control (predictive curve-speed limiting) ------
+# REDUCTION-ONLY: lowers the cruise target the MPC drives toward. Never raises
+# v_cruise, never issues a brake command, never overrides the gas pedal.
+VTSC_ENABLED = True
+VTSC_MIN_ACTIVE_SPEED = 8.3     # m/s (~30 km/h); no curve limiting below this
+VTSC_MAX_REDUCTION_FRAC = 0.50  # hard floor: never request below 50% of the set speed
+VTSC_RATE_DOWN = 2.5            # m/s per s the target may FALL (eases in)
+VTSC_RATE_UP = 1.2              # m/s per s the target may RISE (smooth corner-exit release)
+VTSC_HOLD_S = 0.6               # hold the last constraint this long after it clears
 BRAKE_MAG_GAIN_MAX_PCT = 100
 BRAKE_MAG_GAIN_STEP_PCT = 10
 
@@ -102,6 +113,9 @@ class LongitudinalPlanner:
     self._danger_override_active = False
     self._danger_hold_until_t = 0.0
     self._danger_decel_cmd = ACCEL_MAX
+    self.vtsc_target = V_CRUISE_MAX * CV.KPH_TO_MS
+    self.vtsc_active = False
+    self._vtsc_hold_until_t = 0.0
 
     self.v_desired_trajectory = np.zeros(CONTROL_N)
     self.a_desired_trajectory = np.zeros(CONTROL_N)
@@ -127,6 +141,62 @@ class LongitudinalPlanner:
     else:
       throttle_prob = 1.0
     return x, v, a, j, throttle_prob
+
+  def _apply_vtsc(self, sm, v_ego, v_cruise, reset_state):
+    """Predictive curve-speed limit. REDUCTION-ONLY.
+
+    Lowers only the cruise TARGET; the MPC then decelerates toward it under the normal
+    comfort/jerk limits, so this can never produce a brake jab. compute_curve_speed_target()
+    returns a huge NO_CONSTRAINT sentinel on any bad/short/uncertain input, so the failure
+    mode is "no reduction", never a spurious slow-down.
+    """
+    was_active = self.vtsc_active
+    self.vtsc_active = False
+    if not VTSC_ENABLED or reset_state or v_cruise <= 0.0:
+      self.vtsc_target = max(v_cruise, 0.0)
+      self._vtsc_hold_until_t = 0.0
+      return v_cruise
+
+    try:
+      model = sm['modelV2']
+      res = compute_curve_speed_target(
+        model.orientationRate.z,
+        model.velocity.x,
+        ModelConstants.T_IDXS,
+        stds=model.orientationRate.zStd,
+        params={"target_lat_accel": VTSC_TARGET_LAT_ACCEL},
+      )
+
+      now_t = time.monotonic()
+      raw = v_cruise
+      if res["would_reduce"]:
+        raw = min(res["v_target"], v_cruise)
+        self._vtsc_hold_until_t = now_t + VTSC_HOLD_S
+      elif now_t < self._vtsc_hold_until_t:
+        raw = min(self.vtsc_target, v_cruise)
+
+      # rate-limit the target both ways: eases in, releases smoothly on corner exit
+      prev = min(self.vtsc_target, v_cruise)
+      lo = prev - VTSC_RATE_DOWN * self.dt
+      hi = prev + VTSC_RATE_UP * self.dt
+      self.vtsc_target = float(np.clip(raw, lo, hi))
+
+      # hard floor on how much speed VTSC may ever ask for
+      target = max(self.vtsc_target, v_cruise * (1.0 - VTSC_MAX_REDUCTION_FRAC))
+
+      if v_ego >= VTSC_MIN_ACTIVE_SPEED and target < v_cruise:
+        self.vtsc_active = True
+        if not was_active:
+          cloudlog.event("vtsc_engaged", v_target=float(target), v_cruise=float(v_cruise),
+                         curv=float(res["limiting_curvature"]), t_ahead=float(res["limiting_t"]))
+        return float(target)
+    except Exception:
+      cloudlog.exception("vtsc_failed")
+      self.vtsc_target = v_cruise
+
+    if was_active:
+      cloudlog.event("vtsc_released")
+    return v_cruise
 
   def update(self, sm):
     mode = 'blended' if sm['selfdriveState'].experimentalMode else 'acc'
@@ -177,6 +247,8 @@ class LongitudinalPlanner:
 
     if force_slow_decel:
       v_cruise = 0.0
+
+    v_cruise = self._apply_vtsc(sm, v_ego, v_cruise, reset_state)
 
     self.mpc.set_weights(prev_accel_constraint, personality=sm['selfdriveState'].personality)
     self.mpc.set_cur_state(self.v_desired_filter.x, self.a_desired)
