@@ -42,6 +42,18 @@ VTSC_MAX_REDUCTION_FRAC = 0.50  # hard floor: never request below 50% of the set
 VTSC_RATE_DOWN = 2.5            # m/s per s the target may FALL (eases in)
 VTSC_RATE_UP = 1.2              # m/s per s the target may RISE (smooth corner-exit release)
 VTSC_HOLD_S = 0.6               # hold the last constraint this long after it clears
+
+# VTSC state machine (adapted from sunnypilot SCC-Vision entering/turning/leaving).
+# Their thresholds are absolute lat-accel values tuned for a 2.0 m/s^2 budget; ours is 4.5,
+# so we keep their RATIOS (0.65 / 0.55 / 0.80) and scale to our budget rather than copying
+# the raw numbers -- otherwise we would enter the cycle on bends we have no intention of
+# slowing for. Unlike sunnypilot we never command acceleration: the state only decides
+# whether the speed TARGET may fall, hold, or recover, so VTSC stays reduction-only.
+VTSC_ENTER_FRAC = 0.65   # enter ENTERING when predicted lat accel >= this * budget
+VTSC_ABORT_FRAC = 0.55   # abort ENTERING when predicted drops below this * budget
+VTSC_TURN_FRAC  = 0.80   # ENTERING -> TURNING when CURRENT lat accel >= this * budget
+VTSC_LEAVE_FRAC = 0.65   # TURNING -> LEAVING when current lat accel <= this * budget
+VTSC_FINISH_FRAC = 0.55  # LEAVING -> done when current lat accel < this * budget
 BRAKE_MAG_GAIN_MAX_PCT = 100
 BRAKE_MAG_GAIN_STEP_PCT = 10
 
@@ -116,6 +128,7 @@ class LongitudinalPlanner:
     self.vtsc_target = V_CRUISE_MAX * CV.KPH_TO_MS
     self.vtsc_active = False
     self._vtsc_hold_until_t = 0.0
+    self.vtsc_state = 'enabled'   # enabled | entering | turning | leaving
 
     self.v_desired_trajectory = np.zeros(CONTROL_N)
     self.a_desired_trajectory = np.zeros(CONTROL_N)
@@ -143,18 +156,19 @@ class LongitudinalPlanner:
     return x, v, a, j, throttle_prob
 
   def _apply_vtsc(self, sm, v_ego, v_cruise, reset_state):
-    """Predictive curve-speed limit. REDUCTION-ONLY.
+    """Predictive curve-speed limit. REDUCTION-ONLY, with an entering/turning/leaving state
+    machine adapted from sunnypilot's SCC-Vision.
 
-    Lowers only the cruise TARGET; the MPC then decelerates toward it under the normal
-    comfort/jerk limits, so this can never produce a brake jab. compute_curve_speed_target()
-    returns a huge NO_CONSTRAINT sentinel on any bad/short/uncertain input, so the failure
-    mode is "no reduction", never a spurious slow-down.
+    The state decides only whether the speed TARGET may fall, hold, or recover -- we never
+    command acceleration, so this cannot over-brake by construction. Hysteresis between the
+    thresholds stops the target flickering on bends sitting near the trigger.
     """
     was_active = self.vtsc_active
     self.vtsc_active = False
     if not VTSC_ENABLED or reset_state or v_cruise <= 0.0:
       self.vtsc_target = max(v_cruise, 0.0)
       self._vtsc_hold_until_t = 0.0
+      self.vtsc_state = 'enabled'
       return v_cruise
 
     try:
@@ -167,18 +181,57 @@ class LongitudinalPlanner:
         params={"target_lat_accel": VTSC_TARGET_LAT_ACCEL},
       )
 
-      now_t = time.monotonic()
-      raw = v_cruise
-      if res["would_reduce"]:
-        raw = min(res["v_target"], v_cruise)
-        self._vtsc_hold_until_t = now_t + VTSC_HOLD_S
-      elif now_t < self._vtsc_hold_until_t:
-        raw = min(self.vtsc_target, v_cruise)
+      budget = VTSC_TARGET_LAT_ACCEL
+      max_pred_lat_acc = float(res.get("max_pred_lat_acc", 0.0))
+      # what the car is pulling RIGHT NOW, from the controller's own curvature
+      current_lat_acc = (v_ego ** 2) * abs(sm['controlsState'].curvature)
 
-      # rate-limit the target both ways: eases in, releases smoothly on corner exit
+      # ---- state machine -------------------------------------------------
+      st = self.vtsc_state
+      if v_ego < VTSC_MIN_ACTIVE_SPEED:
+        st = 'enabled'
+      elif st == 'enabled':
+        if max_pred_lat_acc >= VTSC_ENTER_FRAC * budget:
+          st = 'entering'
+      elif st == 'entering':
+        if current_lat_acc >= VTSC_TURN_FRAC * budget:
+          st = 'turning'
+        elif max_pred_lat_acc < VTSC_ABORT_FRAC * budget:
+          st = 'enabled'
+      elif st == 'turning':
+        if current_lat_acc <= VTSC_LEAVE_FRAC * budget:
+          st = 'leaving'
+      elif st == 'leaving':
+        if current_lat_acc >= VTSC_TURN_FRAC * budget:
+          st = 'turning'
+        elif current_lat_acc < VTSC_FINISH_FRAC * budget:
+          st = 'enabled'
+      self.vtsc_state = st
+
+      now_t = time.monotonic()
       prev = min(self.vtsc_target, v_cruise)
-      lo = prev - VTSC_RATE_DOWN * self.dt
-      hi = prev + VTSC_RATE_UP * self.dt
+
+      # ---- what the state permits the target to do -----------------------
+      if st == 'entering':
+        # anticipatory slowdown: let the target fall toward the curve speed
+        raw = min(res["v_target"], v_cruise) if res["would_reduce"] else v_cruise
+        if res["would_reduce"]:
+          self._vtsc_hold_until_t = now_t + VTSC_HOLD_S
+        elif now_t < self._vtsc_hold_until_t:
+          raw = prev
+        lo, hi = prev - VTSC_RATE_DOWN * self.dt, prev + VTSC_RATE_UP * self.dt
+      elif st == 'turning':
+        # mid-corner: hold the speed we arrived at; no further drop, no recovery yet
+        raw = prev
+        lo = hi = prev
+      elif st == 'leaving':
+        # corner exit: recover toward the set speed at the gentle up-rate
+        raw = v_cruise
+        lo, hi = prev, prev + VTSC_RATE_UP * self.dt
+      else:  # 'enabled' -- no curve
+        raw = v_cruise
+        lo, hi = prev - VTSC_RATE_DOWN * self.dt, prev + VTSC_RATE_UP * self.dt
+
       self.vtsc_target = float(np.clip(raw, lo, hi))
 
       # hard floor on how much speed VTSC may ever ask for
@@ -187,15 +240,17 @@ class LongitudinalPlanner:
       if v_ego >= VTSC_MIN_ACTIVE_SPEED and target < v_cruise:
         self.vtsc_active = True
         if not was_active:
-          cloudlog.event("vtsc_engaged", v_target=float(target), v_cruise=float(v_cruise),
-                         curv=float(res["limiting_curvature"]), t_ahead=float(res["limiting_t"]))
+          cloudlog.event("vtsc_engaged", state=st, v_target=float(target), v_cruise=float(v_cruise),
+                         curv=float(res["limiting_curvature"]), t_ahead=float(res["limiting_t"]),
+                         pred_lat_acc=max_pred_lat_acc, cur_lat_acc=float(current_lat_acc))
         return float(target)
     except Exception:
       cloudlog.exception("vtsc_failed")
       self.vtsc_target = v_cruise
+      self.vtsc_state = 'enabled'
 
     if was_active:
-      cloudlog.event("vtsc_released")
+      cloudlog.event("vtsc_released", state=self.vtsc_state)
     return v_cruise
 
   def update(self, sm):
