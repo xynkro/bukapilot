@@ -58,7 +58,8 @@ class Track:
     self.K_K = kalman_params.K
     self.kf = KF1D([[v_lead], [0.0]], self.K_A, self.K_C, self.K_K)
 
-  def update(self, d_rel: float, y_rel: float, v_rel: float, v_lead: float, measured: float):
+  def update(self, d_rel: float, y_rel: float, v_rel: float, v_lead: float, measured: float,
+             a_lead_meas: float | None = None):
     # relative values, copy
     self.dRel = d_rel   # LONG_DIST
     self.yRel = y_rel   # -LAT_DIST
@@ -72,6 +73,21 @@ class Track:
 
     self.vLeadK = float(self.kf.x[SPEED][0])
     self.aLeadK = float(self.kf.x[ACCEL][0])
+
+    # The BYD radar MEASURES lead acceleration directly (ALEAD, 0.01 m/s^2), already
+    # plausibility-gated and low-passed in radar_interface. The Kalman above has to build
+    # its accel estimate up from successive velocity samples, so it lags worst exactly when
+    # acceleration is changing fastest -- a lead braking hard.
+    #
+    # Blend CONSERVATIVELY: take whichever indicates MORE deceleration. A bad/garbage ALEAD
+    # can then only ever make us more cautious about a braking lead, never less. If the
+    # measurement is spurious-positive it is simply ignored by the min().
+    # Only DECELERATION measurements are honoured. capnp floats default to 0.0 rather than
+    # NaN, so an unpopulated aRel would otherwise read as "lead accel = 0" and clamp away a
+    # genuinely accelerating lead, making us follow sluggishly. Gating on < 0 means this can
+    # only ever ADD braking sensitivity, never remove acceleration responsiveness.
+    if a_lead_meas is not None and math.isfinite(a_lead_meas) and a_lead_meas < 0.0:
+      self.aLeadK = min(self.aLeadK, float(a_lead_meas))
 
     # Learn if constant acceleration
     if abs(self.aLeadK) < 0.5:
@@ -190,6 +206,7 @@ class RadarD:
     self.kalman_params = KalmanParams(DT_MDL)
 
     self.v_ego = 0.0
+    self.a_ego = 0.0
     self.v_ego_hist = deque([0.0], maxlen=int(round(delay / DT_MDL))+1)
     self.last_v_ego_frame = -1
 
@@ -204,10 +221,11 @@ class RadarD:
 
     if sm.recv_frame['carState'] != self.last_v_ego_frame:
       self.v_ego = sm['carState'].vEgo
+      self.a_ego = sm['carState'].aEgo
       self.v_ego_hist.append(self.v_ego)
       self.last_v_ego_frame = sm.recv_frame['carState']
 
-    ar_pts = {pt.trackId: [pt.dRel, pt.yRel, pt.vRel, pt.measured] for pt in rr.points}
+    ar_pts = {pt.trackId: [pt.dRel, pt.yRel, pt.vRel, pt.measured, pt.aRel] for pt in rr.points}
 
     # *** remove missing points from meta data ***
     for ids in list(self.tracks.keys()):
@@ -221,10 +239,15 @@ class RadarD:
       # align v_ego by a fixed time to align it with the radar measurement
       v_lead = rpt[2] + self.v_ego_hist[0]
 
+      # radar-measured lead accel: aRel is relative, so add a_ego back to get absolute
+      a_lead_meas = None
+      if len(rpt) > 4 and rpt[4] is not None and math.isfinite(rpt[4]):
+        a_lead_meas = rpt[4] + self.a_ego
+
       # create the track if it doesn't exist or it's a new track
       if ids not in self.tracks:
         self.tracks[ids] = Track(ids, v_lead, self.kalman_params)
-      self.tracks[ids].update(rpt[0], rpt[1], rpt[2], v_lead, rpt[3])
+      self.tracks[ids].update(rpt[0], rpt[1], rpt[2], v_lead, rpt[3], a_lead_meas)
 
     # *** publish radarState ***
     self.radar_state_valid = sm.all_checks()
