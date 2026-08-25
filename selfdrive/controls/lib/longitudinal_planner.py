@@ -226,9 +226,13 @@ class LongitudinalPlanner:
           raw = prev
         lo, hi = prev - VTSC_RATE_DOWN * self.dt, prev + VTSC_RATE_UP * self.dt
       elif st == 'turning':
-        # mid-corner: hold the speed we arrived at; no further drop, no recovery yet
-        raw = prev
-        lo = hi = prev
+        # mid-corner: do NOT recover yet, but DO keep slowing if the corner turns out
+        # tighter than we planned for -- or if VTSC engaged when we were already in it.
+        # (Freezing the target here was a bug: entering->turning can happen in a single
+        # frame when current lat accel is already high, which locked the target at the
+        # entry speed and prevented any slowdown at all.)
+        raw = min(res["v_target"], v_cruise) if res["would_reduce"] else prev
+        lo, hi = prev - VTSC_RATE_DOWN * self.dt, prev
       elif st == 'leaving':
         # corner exit: recover toward the set speed at the gentle up-rate
         raw = v_cruise
