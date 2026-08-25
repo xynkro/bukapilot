@@ -172,8 +172,16 @@ def get_RadarState_from_vision(lead_msg: capnp._DynamicStructReader, v_ego: floa
   }
 
 
+# How long a vision-CONFIRMED lead may be sustained on radar alone after vision drops it.
+# This does NOT let radar invent a lead: the track must already have been vision-confirmed and
+# must still be present in `tracks`, which RadarD rebuilds every frame -- so the hold ends the
+# instant radar stops seeing it. A gantry can never exploit this: it is never vision-confirmed.
+LEAD_SUSTAIN_S = 3.0
+
+
 def get_lead(v_ego: float, ready: bool, tracks: dict[int, Track], lead_msg: capnp._DynamicStructReader,
-             model_v_ego: float, low_speed_override: bool = True) -> dict[str, Any]:
+             model_v_ego: float, low_speed_override: bool = True,
+             sustain: dict | None = None, now: float = 0.0) -> dict[str, Any]:
   # Determine leads, this is where the essential logic happens
   if len(tracks) > 0 and ready and lead_msg.prob > .5:
     track = match_vision_to_track(v_ego, lead_msg, tracks)
@@ -185,6 +193,23 @@ def get_lead(v_ego: float, ready: bool, tracks: dict[int, Track], lead_msg: capn
     lead_dict = track.get_RadarState(lead_msg.prob)
   elif (track is None) and ready and (lead_msg.prob > .5):
     lead_dict = get_RadarState_from_vision(lead_msg, v_ego, model_v_ego)
+
+  # *** RADAR SUSTAIN ***
+  # openpilot needs vision (lead_msg.prob > .5) to declare a lead at speed; radar alone cannot.
+  # When traffic ahead stops the model's lead probability can collapse, the lead vanishes, and
+  # the planner accelerates toward set speed into a forming queue. Let radar hold a lead that
+  # vision already agreed existed, briefly.
+  if sustain is not None:
+    if lead_dict['status'] and lead_dict.get('radar', False):
+      sustain['id'] = lead_dict.get('radarTrackId')
+      sustain['t'] = now
+    elif not lead_dict['status']:
+      tid = sustain.get('id')
+      if tid is not None and tid in tracks and (now - sustain.get('t', 0.0)) < LEAD_SUSTAIN_S:
+        lead_dict = tracks[tid].get_RadarState()
+        lead_dict['modelProb'] = 0.0     # honest: vision is not backing this right now
+      else:
+        sustain['id'] = None
 
   if low_speed_override:
     low_speed_tracks = [c for c in tracks.values() if c.potential_low_speed_lead(v_ego)]
@@ -207,6 +232,8 @@ class RadarD:
 
     self.v_ego = 0.0
     self.a_ego = 0.0
+    self._sustain_one: dict = {}
+    self._sustain_two: dict = {}
     self.v_ego_hist = deque([0.0], maxlen=int(round(delay / DT_MDL))+1)
     self.last_v_ego_frame = -1
 
@@ -262,8 +289,10 @@ class RadarD:
       model_v_ego = self.v_ego
     leads_v3 = sm['modelV2'].leadsV3
     if len(leads_v3) > 1:
-      self.radar_state.leadOne = get_lead(self.v_ego, self.ready, self.tracks, leads_v3[0], model_v_ego, low_speed_override=True)
-      self.radar_state.leadTwo = get_lead(self.v_ego, self.ready, self.tracks, leads_v3[1], model_v_ego, low_speed_override=False)
+      self.radar_state.leadOne = get_lead(self.v_ego, self.ready, self.tracks, leads_v3[0], model_v_ego,
+                                          low_speed_override=True, sustain=self._sustain_one, now=self.current_time)
+      self.radar_state.leadTwo = get_lead(self.v_ego, self.ready, self.tracks, leads_v3[1], model_v_ego,
+                                          low_speed_override=False, sustain=self._sustain_two, now=self.current_time)
 
   def publish(self, pm: messaging.PubMaster):
     assert self.radar_state is not None
