@@ -193,6 +193,13 @@ ALEAD_MEAS_MIN_DECEL = -1.5   # m/s^2
 
 LEAD_SUSTAIN_S = 10.0
 
+# A sustained lead has NO vision backing, so it must clear a TIGHTER lateral bar than a
+# vision-confirmed one. radar_interface only deletes a track beyond |yRel| > 2.4 m, which
+# leaves the 2.0-2.4 m band -- unambiguously the next lane -- eligible to be held for the
+# full sustain window. That is a false-lead path my original sustain did not close: before
+# it, such a lead was dropped the moment vision let go.
+SUSTAIN_YREL_MAX = 1.2   # m
+
 
 def get_lead(v_ego: float, ready: bool, tracks: dict[int, Track], lead_msg: capnp._DynamicStructReader,
              model_v_ego: float, low_speed_override: bool = True,
@@ -220,7 +227,10 @@ def get_lead(v_ego: float, ready: bool, tracks: dict[int, Track], lead_msg: capn
       sustain['t'] = now
     elif not lead_dict['status']:
       tid = sustain.get('id')
-      if tid is not None and tid in tracks and (now - sustain.get('t', 0.0)) < LEAD_SUSTAIN_S:
+      held = (tid is not None and tid in tracks
+              and (now - sustain.get('t', 0.0)) < LEAD_SUSTAIN_S
+              and abs(tracks[tid].yRel) <= SUSTAIN_YREL_MAX)
+      if held:
         lead_dict = tracks[tid].get_RadarState()
         lead_dict['modelProb'] = 0.0     # honest: vision is not backing this right now
       else:
