@@ -45,7 +45,7 @@ class CarInterface(CarInterfaceBase):
     ret.minEnableSpeed = -1
     ret.enableBsm = True
     ret.stoppingDecelRate = 0.2
-    ret.longitudinalActuatorDelay = 0.5
+    ret.longitudinalActuatorDelay = 0.3
 
     if candidate in PLATFORM_MPC_LKA:
       ret.steerControlType = car.CarParams.SteerControlType.torque
