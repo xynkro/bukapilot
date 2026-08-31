@@ -45,7 +45,7 @@ import math
 #     safety net for corners tighter/faster than he'd take naturally, not a comfort limiter.
 #   - It sits just UNDER the 5.0 execution clamp, so VTSC always plans slightly inside
 #     what the lateral controller can actually deliver. Do not raise it above that clamp.
-VTSC_TARGET_LAT_ACCEL = 2.0  # m/s^2
+VTSC_TARGET_LAT_ACCEL = 4.5  # m/s^2
 
 # Sentinel meaning "no curve constraint" — a speed so high nothing would ever be
 # reduced to it. Failing to this value guarantees VTSC never fabricates a slow-down.

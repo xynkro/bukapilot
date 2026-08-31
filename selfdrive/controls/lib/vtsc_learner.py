@@ -25,7 +25,7 @@ import json
 # Only learn from the driver's OWN speed choice, so we require openpilot to NOT be
 # driving longitudinally. Caspar drives on ACC most of the time, so samples accrue
 # slowly -- that is expected, and why the fallback has to be sane on its own.
-DEFAULT_LAT_ACCEL = 2.0   # m/s^2, used until enough has been learned
+DEFAULT_LAT_ACCEL = 4.5   # m/s^2, used until enough has been learned
 
 CURV_MIN = 0.002          # 1/m (R = 500 m) -- below this it is not a corner
 CURV_MAX = 0.050          # 1/m (R = 20 m)  -- above this is a car park, not a road
@@ -46,8 +46,8 @@ MIN_SAMPLES = 20          # and this many samples in total
 # that clamp is what the lateral controller can actually EXECUTE. Planning a corner entry
 # speed against a budget the car will never deliver systematically UNDER-slows -- the exact
 # failure the module docstring in vtsc.py warns about. Keep this <= the execution clamp.
-LEARNED_MIN = 1.5
-LEARNED_MAX = 3.0
+LEARNED_MIN = 2.5
+LEARNED_MAX = 5.0
 
 
 def _percentile(sorted_vals, pct):
