@@ -191,7 +191,7 @@ def get_RadarState_from_vision(lead_msg: capnp._DynamicStructReader, v_ego: floa
 # behaviour on mild lifts. See the note in Track.update().
 ALEAD_MEAS_MIN_DECEL = -1.5   # m/s^2
 
-LEAD_SUSTAIN_S = 10.0
+LEAD_SUSTAIN_S = 15.0
 
 # A sustained lead has NO vision backing, so it must clear a TIGHTER lateral bar than a
 # vision-confirmed one. radar_interface only deletes a track beyond |yRel| > 2.4 m, which
