@@ -64,6 +64,14 @@ DREL_MAX = 200.0
 # Filter side-lane vehicles to prevent phantom braking
 # Balanced at 1.5m - allows legitimate vehicles while filtering obvious side-lane vehicles
 # Typical lane width ~3.5m, so 1.5m = center ~43% (reasonable for lane keeping)
+# A radar "slot" is a MESSAGE INDEX (RADAR_TRACK_00..09), not an object. The radar reuses
+# slots freely -- slot 3 can hold the lead car one frame and an overpass the next. Nothing
+# here used to check for that, so the RadarPoint kept its trackId and radard's Kalman blended
+# two different physical objects. Survivable when vision must re-confirm the lead every frame;
+# NOT survivable with the lead sustain, which trusts radarTrackId for seconds without vision.
+# 6 m in one 20 Hz frame implies 120 m/s of relative motion -- physically impossible, so this
+# cannot fire on real movement or radar noise.
+TRACK_SWAP_DREL_JUMP = 6.0   # m
 YREL_ABS_MAX = 2.0     # Balanced: filter obvious side-lane vehicles (>1.5m) while allowing legitimate vehicles
 VREL_ABS_MAX = 60.0
 AREL_ABS_MAX = 12.0
@@ -98,6 +106,7 @@ class RadarInterface(RadarInterfaceBase):
 
     self.track_id = 0
     self.slot_track_id = {}     # slot -> stable trackId
+    self.slot_radar_id: dict[int, int] = {}   # slot -> the radar's OWN TRACK_ID, to spot reuse
 
     self.valid_cnt = {i: 0 for i in range(self.radar_msg_count)}
     self.miss_cnt = {i: 0 for i in range(self.radar_msg_count)}
@@ -289,6 +298,18 @@ class RadarInterface(RadarInterfaceBase):
     self.track_id += 1
     return self.slot_track_id[slot]
 
+  def _drop_slot_identity(self, slot):
+    """A slot SWAP is a new object, not a reappearing track. Forget the slot's identity
+    completely so a fresh trackId is allocated and _find_matching_track_id cannot match
+    it back to the object that just left. Deliberately does NOT write track_history."""
+    self.pts.pop(slot, None)
+    self.slot_track_id.pop(slot, None)
+    self.valid_cnt[slot] = 0
+    self.miss_cnt[slot] = 0
+    self.seal6_prev_drel.pop(slot, None)
+    self.seal6_vrel_filt.pop(slot, None)
+    self.seal6_drel_ring.pop(slot, None)
+
   def _kill_slot(self, slot):
     # Before deleting, save track state to history for matching reappearing tracks
     if slot in self.pts:
@@ -316,6 +337,21 @@ class RadarInterface(RadarInterfaceBase):
       prev_drel = self.seal6_prev_drel.get(slot) if self.seal6_radar else None
 
       conf, meas_ok, dRel, yRel, vRel, aRel = self._read_track(msg, v_ego, a_ego, slot)
+
+      # *** SLOT SWAP DETECTION ***
+      # Two independent signals, because the radar's TRACK_ID is not verified on this car:
+      #   1. the radar's own TRACK_ID for this slot changed  (authoritative when non-zero)
+      #   2. dRel moved further in one frame than any real object could  (always works)
+      radar_tid = int(msg.get("TRACK_ID", 0) or 0)
+      if slot in self.pts and meas_ok:
+        prev_pt = self.pts[slot]
+        expected_drel = prev_pt.dRel + prev_pt.vRel * (1.0 / RADAR_FREQ_HZ)
+        jumped = abs(dRel - expected_drel) > TRACK_SWAP_DREL_JUMP
+        prev_tid = self.slot_radar_id.get(slot, 0)
+        id_changed = radar_tid > 0 and prev_tid > 0 and radar_tid != prev_tid
+        if jumped or id_changed:
+          self._drop_slot_identity(slot)
+      self.slot_radar_id[slot] = radar_tid
 
       low_speed_untrusted = False
       if self.seal6_radar and meas_ok:
