@@ -37,7 +37,27 @@ DANGER_HOLD_SECONDS = 0.2
 # --- VTSC: Vision Turn Speed Control (predictive curve-speed limiting) ------
 # REDUCTION-ONLY: lowers the cruise target the MPC drives toward. Never raises
 # v_cruise, never issues a brake command, never overrides the gas pedal.
-VTSC_ENABLED = True
+# DISABLED 2026-09-01. Proven harmful on the car and never once useful.
+# From Caspar's own swaglog (device UTC / SGT):
+#   15:24:56 SGT  vtsc_engaged  state=enabled  target=44 km/h  set=88 km/h  (the 50% floor)
+#                 curv=0.0  pred_lat_acc=0.0     <- DEAD STRAIGHT ROAD, no curve at all
+#   15:41:57 SGT  vtsc_engaged  state=enabled  target=76 km/h  set=80 km/h  curv=0.0
+# while on the REAL curves that same drive (15:42:36, 15:43:00, curv~0.0065, R~150 m) it
+# correctly made no reduction. So: zero benefit, and a spurious clamp to half the set
+# speed on a straight expressway -- the "jam brake" Caspar filmed.
+#
+# Root cause: `target = max(vtsc_target, v_cruise * 0.5)` returns the FLOOR whenever
+# vtsc_target is stale-low, and `target < v_cruise` then reports it as active. vtsc_target
+# goes stale-low because the 'enabled' (no-curve) branch rate-limited its RECOVERY to
+# VTSC_RATE_UP = 1.2 m/s per second -- ~20 s to climb back -- and it is reset to v_cruise
+# on every reset_state (i.e. whenever longitudinal control is off). The floor was meant to
+# BOUND a real reduction, never to become one.
+#
+# Re-enabling requires, at minimum: (a) never return a reduced target unless
+# res["would_reduce"] is true, (b) snap to v_cruise in 'enabled' rather than ramping, and
+# (c) a lane-change guard -- _apply_vtsc has none, while the learner already refuses to
+# learn during a blinker. None of that is worth carrying on a daily driver unproven.
+VTSC_ENABLED = False
 VTSC_MIN_ACTIVE_SPEED = 8.3     # m/s (~30 km/h); no curve limiting below this
 VTSC_MAX_REDUCTION_FRAC = 0.50  # hard floor: never request below 50% of the set speed
 VTSC_RATE_DOWN = 2.5            # m/s per s the target may FALL (eases in)
