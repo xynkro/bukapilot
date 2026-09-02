@@ -68,7 +68,17 @@ procs = [
   #DaemonProcess("manage_athenad", "system.athena.manage_athenad", "AthenadPid"),
 
   NativeProcess("loggerd", "system/loggerd", ["./loggerd"], logging),
-  NativeProcess("encoderd", "system/loggerd", ["./encoderd"], only_onroad),
+  # DISABLED 2026-09-02 to make the device actually retain diagnostic logs.
+  # Every 1-minute segment was ~150 MB, of which fcamera.hevc (70 MB) + ecamera.hevc (70 MB)
+  # are 95%; rlog.zst is only 6-9 MB. With the deleter's reserve that left ~8 MINUTES of
+  # history, so the drive containing a jam-brake event was always already deleted by the time
+  # we looked. Dropping video takes retention from ~8 min to ~2 hours, which is what actually
+  # lets us diagnose. qcamera.ts (1.4 MB/min) goes too -- it shares this process and the
+  # encoder list is C++ in loggerd.h, which cannot be changed on a `prebuilt` device.
+  # SAFE: on the KA2 (RK3588 + /KA2) loggerd rotates via deterministic_ka2_mode() on its own
+  # clock and never waits for encoders, so no encoderd means no stall -- only no video.
+  # Re-enable by uncommenting; it affects logging only, never how the car drives.
+  # NativeProcess("encoderd", "system/loggerd", ["./encoderd"], only_onroad),
   NativeProcess("stream_encoderd", "system/loggerd", ["./encoderd", "--stream"], notcar),
   PythonProcess("logmessaged", "system.logmessaged", always_run),
 
