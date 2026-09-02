@@ -99,8 +99,27 @@ class Track:
         and a_lead_meas < ALEAD_MEAS_MIN_DECEL):
       self.aLeadK = min(self.aLeadK, float(a_lead_meas))
 
-    # Learn if constant acceleration
-    if abs(self.aLeadK) < 0.5:
+    # Learn if constant acceleration.
+    #
+    # THRESHOLD RAISED 0.5 -> 1.0 (2026-09-02). Crossing this collapses aLeadTau to 0, which
+    # tells the MPC to project the lead's deceleration as PERMANENT
+    # (a_lead_traj = a_lead * exp(-aLeadTau * t^2 / 2)) -- so it must only fire when the lead
+    # is REALLY braking, not when it taps.
+    #
+    # Measured on the car (2026-09-02 route, 5935 lead frames matched against the BYD radar's
+    # own directly-measured ALEAD):
+    #   threshold 0.5 : 746 collapses, 401 of them SPURIOUS (radar measured the lead
+    #                   decelerating less than 0.5 m/s^2) -- 54% false-fire rate
+    #   threshold 1.0 : 352 collapses, 108 spurious -- 73% of the false fires removed
+    # and at 1.0, all 9 frames where the lead genuinely braked hard (ALEAD < -2.0) STILL
+    # collapse tau, plus 86% of moderate braking (-1.0..-2.0). At 2.0 that starts to fail
+    # (8 of 9), so 1.0 is the limit.
+    #
+    # Closed-loop through the MPC, threshold 0.5 vs 1.0: peak braking on a -0.8 tap softens
+    # -0.65 -> -0.53, while -2.5 / -3.0 / -5.0 / -8.0 lead braking is BYTE-IDENTICAL. The
+    # emergency response is untouched by construction: aLeadK itself is not modified, we
+    # simply stop reacting to values the radar says are not there.
+    if abs(self.aLeadK) < ALEAD_TAU_COLLAPSE_THRESHOLD:
       self.aLeadTau.x = _LEAD_ACCEL_TAU
     else:
       self.aLeadTau.update(0.0)
@@ -190,6 +209,8 @@ def get_RadarState_from_vision(lead_msg: capnp._DynamicStructReader, v_ego: floa
 # Above it the Kalman estimate is used, which avoids tripping the aLeadTau "permanent decel"
 # behaviour on mild lifts. See the note in Track.update().
 ALEAD_MEAS_MIN_DECEL = -1.5   # m/s^2
+# |aLeadK| at or above this collapses aLeadTau to 0. See the long note in Track.update().
+ALEAD_TAU_COLLAPSE_THRESHOLD = 1.0   # m/s^2  (stock openpilot: 0.5)
 
 LEAD_SUSTAIN_S = 10.0
 
