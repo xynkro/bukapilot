@@ -45,7 +45,18 @@ class CarInterface(CarInterfaceBase):
     ret.minEnableSpeed = -1
     ret.enableBsm = True
     ret.stoppingDecelRate = 0.2
-    ret.longitudinalActuatorDelay = 0.3
+    # MEASURED on this car, not inherited. Cross-correlating carControl.actuators.accel
+    # against carState.aEgo over 10692 engaged frames (2026-09-02/03 route, pedal-free,
+    # v_ego > 3 m/s) peaks at 0.50 s:
+    #     lag 0.30 s -> correlation 0.948, slope 0.985
+    #     lag 0.40 s -> correlation 0.954, slope 1.001
+    #     lag 0.50 s -> correlation 0.957, slope 1.014   <-- peak
+    # It was 0.5 here and I changed it to kommuai's 0.3 on the grounds that 0.3 was "stock".
+    # That was wrong: 0.3 is upstream's generic placeholder (interfaces.py notes "TODO
+    # estimate car specific lag, use .15s for now"), while 0.5 matches this car's actual
+    # actuation. Undershooting it makes the planner sample its trajectory 0.15 s shy of when
+    # the command really lands, so every correction arrives late and the next one is sharper.
+    ret.longitudinalActuatorDelay = 0.5
 
     if candidate in PLATFORM_MPC_LKA:
       ret.steerControlType = car.CarParams.SteerControlType.torque
