@@ -72,7 +72,7 @@ DREL_MAX = 200.0
 # 6 m in one 20 Hz frame implies 120 m/s of relative motion -- physically impossible, so this
 # cannot fire on real movement or radar noise.
 TRACK_SWAP_DREL_JUMP = 6.0   # m
-YREL_ABS_MAX = 2.0     # Balanced: filter obvious side-lane vehicles (>1.5m) while allowing legitimate vehicles
+YREL_ABS_MAX = 1.5     # stock (kommuai staging). Filter obvious side-lane vehicles while allowing legitimate ones.
 VREL_ABS_MAX = 60.0
 AREL_ABS_MAX = 12.0
 
