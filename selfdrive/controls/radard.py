@@ -95,40 +95,20 @@ class Track:
     # that was needed. The Kalman handles gentle decel perfectly well and keeps tau high.
     # So: use the measurement only when the lead is really braking, which is the case the
     # Kalman is genuinely slow at.
-    # SUPERSEDED 2026-09-03: the conservative min() blend above is replaced by using the
-    # radar's measurement DIRECTLY, because the Kalman estimate is not measuring the lead.
-    #
-    # Regressed on 29839 engaged frames, route 2026-09-03--06-14-37, against the lead's true
-    # acceleration (d(VLEAD)/dt) and ego's own aEgo:
-    #                   tracks the lead      ego contamination
-    #   aLeadK (Kalman)      +0.032               +0.621
-    #   ALEAD  (radar)       +0.280               +0.147
-    # A clean estimator would be +1.000 / +0.000. The Kalman is ~9x worse at tracking the
-    # lead and ~4x more contaminated by our own motion. It was reporting -4.4 m/s^2 against
-    # a lead sitting at constant speed.
-    #
-    # 807d1379 removed the ego term from a_lead_meas, which was necessary but NOT sufficient:
-    # restricting the fit to aEgo > +0.3, where the old blend was structurally unable to fire,
-    # still leaves an ego coefficient of +0.145. A second leak remains in the DERIVED path --
-    # most likely the two different v_ego sources (wheel-speed x wheelSpeedFactor in
-    # byd/radar_interface vs carState.vEgo in radard), so ego velocity never fully cancels out
-    # of v_lead and its derivative lands in aLeadK. Consuming the measurement instead of the
-    # derivative sidesteps that leak for this signal.
-    #
-    # Same approach as CarrotPilot (ajouatom/openpilot, carrot-wip), which publishes
-    # "aLeadK": float(point.a_lead) and dropped the Kalman for lead accel entirely.
-    #
-    # OPEN RISK, NOT YET MEASURED: the largest lead deceleration ALEAD reported across a whole
-    # drive was -1.77 m/s^2. It is unverified whether that is because no lead braked harder, or
-    # because ALEAD clips/filters. If it clips, this removes anticipatory braking authority on a
-    # genuinely hard-braking lead. Mitigating: the MPC's emergency response is driven mainly by
-    # dRel and vRel (closure), not by aLeadK -- aLeadK feeds the PROJECTION of future lead
-    # deceleration. And the term being replaced currently tracks the lead at 0.032, i.e. it is
-    # very nearly noise, so this is not trading accurate anticipation for none.
-    # TO CHECK on the next clean log: distribution of ALEAD near its floor (a clipped signal
-    # piles up at the limit) and ALEAD during the hardest observed true lead decelerations.
-    if a_lead_meas is not None and math.isfinite(a_lead_meas):
-      self.aLeadK = float(a_lead_meas)
+    # REVERTED 2026-09-03 (was 1fd7167f: aLeadK := measured ALEAD directly).
+    # That change FAILED the scenario suite. Controlled A/B, same plant, code only:
+    #   with 1fd7167f  33/37 -- cut-in -9.5 m, stop-and-go -0.9 m, morning commute -1.2 m
+    #   without it     36/37 -- only the known plant.py stopping-queue artifact
+    # The sim feeds the TRUE lead acceleration as a_lead_meas, so this is NOT about ALEAD
+    # being imperfect: even a perfect measurement collides. The Kalman's LAG is load-bearing
+    # -- it holds aLeadK negative through the tail of a braking event, keeping the projection
+    # alive while still closing. Also tested and refuted as the mechanism: making the
+    # aLeadTau snap-back symmetric (aLeadTau.update(_LEAD_ACCEL_TAU) instead of the instant
+    # aLeadTau.x = ...) still gives 32/37.
+    # Do NOT re-apply without new evidence. See the ALEAD-direct notes in the project memory.
+    if (a_lead_meas is not None and math.isfinite(a_lead_meas)
+        and a_lead_meas < ALEAD_MEAS_MIN_DECEL):
+      self.aLeadK = min(self.aLeadK, float(a_lead_meas))
 
     # Learn if constant acceleration.
     #
