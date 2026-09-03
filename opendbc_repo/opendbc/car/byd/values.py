@@ -78,7 +78,7 @@ class CAR(Platforms):
       kommu_supported=True,
       **BYD_SUPPORT_COMMON_FIELDS,
     )],
-    CarSpecs(mass=2090.0, wheelbase=2.72, steerRatio=14.0),
+    CarSpecs(mass=2090.0, wheelbase=2.72, steerRatio=16.0),
   )
   BYD_M6 = CamLkaPlatformConfig(
     [BYDCarDocs(
