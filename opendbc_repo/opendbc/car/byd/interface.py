@@ -56,7 +56,9 @@ class CarInterface(CarInterfaceBase):
     # estimate car specific lag, use .15s for now"), while 0.5 matches this car's actual
     # actuation. Undershooting it makes the planner sample its trajectory 0.15 s shy of when
     # the command really lands, so every correction arrives late and the next one is sharper.
-    ret.longitudinalActuatorDelay = 0.5
+    # stock bukapilot 10.1.0 = 0.3; measured actuation lag on this car = 0.50 s.
+    # 0.6 deliberately over-compensates: action_t = delay + DT_MDL = 0.65.
+    ret.longitudinalActuatorDelay = 0.6
 
     if candidate in PLATFORM_MPC_LKA:
       ret.steerControlType = car.CarParams.SteerControlType.torque
