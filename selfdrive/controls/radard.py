@@ -312,10 +312,38 @@ class RadarD:
       # align v_ego by a fixed time to align it with the radar measurement
       v_lead = rpt[2] + self.v_ego_hist[0]
 
-      # radar-measured lead accel: aRel is relative, so add a_ego back to get absolute
+      # Radar-measured lead accel. Do NOT add a_ego back.
+      #
+      # BUG FIXED 2026-09-03: this used to be `rpt[4] + self.a_ego`, on the
+      # assumption that radar_interface had subtracted a_ego to make aRel
+      # relative. It had not: byd/radar_interface._ego_speed_accel() returns
+      # `(v_ego, 0.0)` -- a_ego is hardcoded ZERO -- so `aRel = alead - a_ego`
+      # subtracts nothing while this line added the real aEgo back.
+      #
+      # Result was a positive feedback loop in the braking path: ego brakes ->
+      # a_lead_meas = ALEAD + aEgo goes below ALEAD_MEAS_MIN_DECEL purely from
+      # ego's own decel -> min() drags aLeadK down -> aLeadTau collapses to 0 ->
+      # MPC projects a PERMANENT lead stop -> commands more brake -> aEgo stays
+      # large -> loop sustains. Only engages once already braking hard, which is
+      # why it presented as a jam brake rather than a constant offset.
+      #
+      # Measured on route 2026-09-03--06-14-37 (9565 engaged frames):
+      #   aLeadK ~= 0.022*a_lead_true + 0.652*aEgo      (clean: 1.000 / 0.000)
+      #   corr(aLeadK, true lead accel) = 0.126
+      #   during hard braking (aEgo < -1.5, n=166):
+      #     aLeadK ~= 0.131*a_lead_true + 1.697*aEgo
+      #     mean aLeadK -3.05 vs true lead accel -0.77 (overstates by 2.28)
+      # Episode at t=395s: lead shed 10.2 km/h, ego shed 34.9 (3.4x), command
+      # saturated at ACCEL_MIN -3.50 for 1.5 s AFTER vRel went positive and the
+      # gap was growing, never below 27.2 m.
+      #
+      # Safe either way: if ALEAD is absolute (as VLEAD is, and as this file
+      # already treats it) this is simply correct. If it were relative, it reads
+      # POSITIVE while we brake, min() ignores it, and the blend goes inert --
+      # i.e. stock behaviour. No branch makes braking weaker than stock.
       a_lead_meas = None
       if len(rpt) > 4 and rpt[4] is not None and math.isfinite(rpt[4]):
-        a_lead_meas = rpt[4] + self.a_ego
+        a_lead_meas = rpt[4]
 
       # create the track if it doesn't exist or it's a new track
       if ids not in self.tracks:
