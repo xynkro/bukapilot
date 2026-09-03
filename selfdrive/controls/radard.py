@@ -95,20 +95,38 @@ class Track:
     # that was needed. The Kalman handles gentle decel perfectly well and keeps tau high.
     # So: use the measurement only when the lead is really braking, which is the case the
     # Kalman is genuinely slow at.
-    # REVERTED 2026-09-03 (was 1fd7167f: aLeadK := measured ALEAD directly).
-    # That change FAILED the scenario suite. Controlled A/B, same plant, code only:
-    #   with 1fd7167f  33/37 -- cut-in -9.5 m, stop-and-go -0.9 m, morning commute -1.2 m
-    #   without it     36/37 -- only the known plant.py stopping-queue artifact
-    # The sim feeds the TRUE lead acceleration as a_lead_meas, so this is NOT about ALEAD
-    # being imperfect: even a perfect measurement collides. The Kalman's LAG is load-bearing
-    # -- it holds aLeadK negative through the tail of a braking event, keeping the projection
-    # alive while still closing. Also tested and refuted as the mechanism: making the
-    # aLeadTau snap-back symmetric (aLeadTau.update(_LEAD_ACCEL_TAU) instead of the instant
-    # aLeadTau.x = ...) still gives 32/37.
-    # Do NOT re-apply without new evidence. See the ALEAD-direct notes in the project memory.
-    if (a_lead_meas is not None and math.isfinite(a_lead_meas)
-        and a_lead_meas < ALEAD_MEAS_MIN_DECEL):
-      self.aLeadK = min(self.aLeadK, float(a_lead_meas))
+    # ALEAD-DIRECT, RE-APPLIED 2026-09-04 at Caspar's request for road testing.
+    # aLeadK is taken from the radar's own measured ALEAD rather than the Kalman.
+    #
+    # WHY: measured on the car (route 2026-09-03--06-14-37, 29839 engaged frames),
+    # regressed on the lead's true acceleration and on ego's own aEgo:
+    #     aLeadK (Kalman)  tracks lead +0.032   ego contamination +0.621
+    #     ALEAD  (radar)   tracks lead +0.280   ego contamination +0.147
+    #     a clean estimator would be  +1.000 / +0.000
+    # The Kalman is ~9x worse at tracking the lead and ~4x more contaminated.
+    #
+    # KNOWN RISK, UNRESOLVED -- this FAILS the offline scenario suite. Controlled
+    # A/B, same plant, only this code changed:
+    #     with    33/37  cut-in -9.5 m, stop-and-go -0.9 m, morning commute -1.2 m
+    #     without 36/37  only the known plant.py stopping-queue artifact
+    # The sim feeds the TRUE lead acceleration as a_lead_meas, so it is NOT about
+    # ALEAD being an imperfect sensor: even a perfect measurement collides there.
+    # Hypothesis: the Kalman's LAG is load-bearing, holding aLeadK negative through
+    # the tail of a braking event and keeping the deceleration projection alive
+    # while still closing. Tested and REFUTED as the mechanism: making the aLeadTau
+    # snap-back symmetric (aLeadTau.update(_LEAD_ACCEL_TAU) instead of the instant
+    # aLeadTau.x = ...) still gives 32/37. Actual mechanism still unknown.
+    #
+    # First road trial (2026-09-03 evening): "seemed ok, not much change" -- no
+    # incident, but no felt benefit either. Neither confirms nor refutes; the sim
+    # failures are cut-in and stop-and-go geometry that may simply not have been hit.
+    # WATCH cut-ins especially -- by far the worst sim failure.
+    #
+    # TO SETTLE IT: with this on, aLeadK IS ALEAD, so the same regression should
+    # shift lead-tracking ~0.15 -> ~0.28 and ego ~0.45 -> ~0.147. If those numbers
+    # do not move, the premise is wrong and this should come back out.
+    if a_lead_meas is not None and math.isfinite(a_lead_meas):
+      self.aLeadK = float(a_lead_meas)
 
     # Learn if constant acceleration.
     #
