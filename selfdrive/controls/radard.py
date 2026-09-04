@@ -95,38 +95,36 @@ class Track:
     # that was needed. The Kalman handles gentle decel perfectly well and keeps tau high.
     # So: use the measurement only when the lead is really braking, which is the case the
     # Kalman is genuinely slow at.
-    # ALEAD-DIRECT, RE-APPLIED 2026-09-04 at Caspar's request for road testing.
-    # aLeadK is taken from the radar's own measured ALEAD rather than the Kalman.
+    # ALEAD-direct REVERTED again 2026-09-04 after road trial, at Caspar's request.
+    # aLeadK returns to the Kalman estimate, with ALEAD used only as a conservative
+    # floor for genuine hard braking (the min() below).
     #
-    # WHY: measured on the car (route 2026-09-03--06-14-37, 29839 engaged frames),
+    # Trial outcome: two drives with ALEAD-direct ON, reported as "seemed ok, not much
+    # change" -- no incident, but no felt benefit either. Against that, it fails the
+    # offline suite 33/37 vs 36/37 (cut-in -9.5 m, stop-and-go -0.9 m, morning commute
+    # -1.2 m), and the sim feeds the TRUE lead acceleration, so even a perfect
+    # measurement collides there. No demonstrated upside, an unexplained simulated
+    # downside: revert.
+    #
+    # Kept for the record, measured on the car (2026-09-03--06-14-37, 29839 frames),
     # regressed on the lead's true acceleration and on ego's own aEgo:
     #     aLeadK (Kalman)  tracks lead +0.032   ego contamination +0.621
     #     ALEAD  (radar)   tracks lead +0.280   ego contamination +0.147
-    #     a clean estimator would be  +1.000 / +0.000
-    # The Kalman is ~9x worse at tracking the lead and ~4x more contaminated.
+    # ALEAD really is the better raw signal. The Kalman's LAG appears to be
+    # load-bearing -- it holds aLeadK negative through the tail of a braking event and
+    # keeps the deceleration projection alive while the car is still closing. Tested
+    # and REFUTED as the mechanism: making the aLeadTau snap-back symmetric
+    # (aLeadTau.update(_LEAD_ACCEL_TAU) instead of the instant aLeadTau.x = ...) still
+    # gives 32/37. The real mechanism is still unknown.
     #
-    # KNOWN RISK, UNRESOLVED -- this FAILS the offline scenario suite. Controlled
-    # A/B, same plant, only this code changed:
-    #     with    33/37  cut-in -9.5 m, stop-and-go -0.9 m, morning commute -1.2 m
-    #     without 36/37  only the known plant.py stopping-queue artifact
-    # The sim feeds the TRUE lead acceleration as a_lead_meas, so it is NOT about
-    # ALEAD being an imperfect sensor: even a perfect measurement collides there.
-    # Hypothesis: the Kalman's LAG is load-bearing, holding aLeadK negative through
-    # the tail of a braking event and keeping the deceleration projection alive
-    # while still closing. Tested and REFUTED as the mechanism: making the aLeadTau
-    # snap-back symmetric (aLeadTau.update(_LEAD_ACCEL_TAU) instead of the instant
-    # aLeadTau.x = ...) still gives 32/37. Actual mechanism still unknown.
-    #
-    # First road trial (2026-09-03 evening): "seemed ok, not much change" -- no
-    # incident, but no felt benefit either. Neither confirms nor refutes; the sim
-    # failures are cut-in and stop-and-go geometry that may simply not have been hit.
-    # WATCH cut-ins especially -- by far the worst sim failure.
-    #
-    # TO SETTLE IT: with this on, aLeadK IS ALEAD, so the same regression should
-    # shift lead-tracking ~0.15 -> ~0.28 and ego ~0.45 -> ~0.147. If those numbers
-    # do not move, the premise is wrong and this should come back out.
-    if a_lead_meas is not None and math.isfinite(a_lead_meas):
-      self.aLeadK = float(a_lead_meas)
+    # NOTE: this does not change vision's role either way. Vision gates whether a lead
+    # EXISTS (lead_msg.prob > .5), and when radar has no track at all,
+    # get_RadarState_from_vision supplies the lead outright including
+    # "aLeadK": float(lead_msg.a[0]) -- the model's own lead-accel estimate. Both paths
+    # are identical with or without ALEAD-direct.
+    if (a_lead_meas is not None and math.isfinite(a_lead_meas)
+        and a_lead_meas < ALEAD_MEAS_MIN_DECEL):
+      self.aLeadK = min(self.aLeadK, float(a_lead_meas))
 
     # Learn if constant acceleration.
     #
