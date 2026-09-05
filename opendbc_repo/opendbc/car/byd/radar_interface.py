@@ -72,7 +72,25 @@ DREL_MAX = 200.0
 # 6 m in one 20 Hz frame implies 120 m/s of relative motion -- physically impossible, so this
 # cannot fire on real movement or radar noise.
 TRACK_SWAP_DREL_JUMP = 6.0   # m
-YREL_ABS_MAX = 1.5     # stock (kommuai staging). Filter obvious side-lane vehicles while allowing legitimate ones.
+# 2.0, not stock's 1.5. Reverted 2026-09-05 pending measurement (yrel_decide.py).
+# Gates radar points by RAW |LAT_DIST|; beyond it the point is dropped and can never
+# become the lead. The two errors are NOT symmetric:
+#   too wide  -> admits adjacent-lane CANDIDATES, which vision must still confirm via
+#                match_vision_to_track (lead_msg.prob > .5). A second filter exists.
+#   too narrow-> a genuine lead is never published, so radard cannot select it. No recovery.
+# Adjacent lanes are not what this decides: measured lane width on these roads is
+# 3.11-3.20 m (n=2946 highway samples), so a next-lane car sits ~3.15 m out, clear of
+# both thresholds. What it actually decides is IN-LANE LEADS ON CURVES, because raw
+# lateral offset grows as d^2/2R:
+#     d=30 m R=400 m -> 1.1 m      d=40 m R=400 m -> 2.0 m      d=40 m R=250 m -> 3.2 m
+# So 1.5 discards a real lead ~40 m ahead on a moderate curve.
+# The false-lead risk that actually hurts is the SUSTAIN path (lead held up to 10 s with
+# no vision backing) and that is gated separately and tighter at SUSTAIN_YREL_MAX = 1.2;
+# radar_interface also deletes beyond 2.4 m.
+# PROPER FIX (parked): curvature-compensated gate, yRel - dRel**2 * curvature / 2, which
+# removes the curve term and would let a gate TIGHTER than 1.5 be safe. Needs model
+# curvature plumbed into radar_interface.
+YREL_ABS_MAX = 2.0
 VREL_ABS_MAX = 60.0
 AREL_ABS_MAX = 12.0
 
