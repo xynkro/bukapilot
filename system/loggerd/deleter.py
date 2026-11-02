@@ -13,7 +13,13 @@ from openpilot.system.loggerd.memory_pressure import (
   handle_memory_pressure,
 )
 
-MIN_BYTES = 5 * 1024 * 1024 * 1024
+# comma's 5 GB default is sized for their 32-64 GB devices. The KA2's /data partition is
+# only 8.2 GB, so a 5 GB reserve is 61% of the disk -- the deleter therefore wiped EVERY
+# segment as fast as loggerd wrote it, and /data/media/0/realdata was permanently empty.
+# That is why no drive of Caspar's has ever left an rlog to diagnose from.
+# 2.5 GB is ~30% of this partition: still enough headroom to rebuild the ~2.0 GB
+# safe_staging/finalized tree during an update, while leaving ~1.2 GB for segments.
+MIN_BYTES = 2.5 * 1024 * 1024 * 1024
 MIN_PERCENT = 10
 
 DELETE_LAST = ['boot', 'crash']
