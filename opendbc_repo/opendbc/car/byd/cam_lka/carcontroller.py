@@ -28,6 +28,13 @@ SEAL6_OVERRIDE_EXIT_NM = 4
 SEAL6_OVERRIDE_ENTER_FRAMES = 5   # 50ms at 100Hz CC; drop LKA torque glitches
 SEAL6_OVERRIDE_EXIT_FRAMES = 20   # 0.2s at 100Hz CC
 LKA_COOLDOWN_MIN_FRAMES = 30
+# Atto 3 angle path: fade the servo toward the measured angle while the driver steers, so a firm
+# push moves the wheel without disengaging. No effect below the low torque, and the servo eases
+# back after release. DRIVER_EPS_TORQUE units; manual driving logged p50=1, p95=10, p99=19.
+ATTO3_OVERRIDE_TORQUE_LOW = 10
+ATTO3_OVERRIDE_TORQUE_HIGH = 16
+ATTO3_OVERRIDE_RISE_S = 0.15
+ATTO3_OVERRIDE_FALL_S = 1.0
 
 
 BUTTON_KEEPALIVE_FRAMES = 100
@@ -58,6 +65,7 @@ class CarController(CarControllerBase):
     self.seal6_steer_override = False
     self.seal6_override_clear = 0
     self.seal6_override_enter = 0
+    self.atto3_override_blend = 0.0
 
   def _update_lka_latch_state(self, CS):
     if self.CP.carFingerprint == CAR.BYD_SEAL6:
@@ -107,10 +115,19 @@ class CarController(CarControllerBase):
   def _compute_apply_angle(self, CS, actuators, lat_active):
     meas_deg = CS.out.steeringAngleDeg
     if not lat_active:
+      self.atto3_override_blend = 0.0
       return meas_deg, False
 
     limits = CarControllerParams.ANGLE_LIMITS
-    after_lowpass = lowpass_1pole(actuators.steeringAngleDeg, self.last_apply_angle)
+    desired_deg = actuators.steeringAngleDeg
+    if self.CP.carFingerprint == CAR.BYD_ATTO3:
+      blend_target = float(np.clip((abs(CS.out.steeringTorqueEps) - ATTO3_OVERRIDE_TORQUE_LOW) /
+                                   (ATTO3_OVERRIDE_TORQUE_HIGH - ATTO3_OVERRIDE_TORQUE_LOW), 0.0, 1.0))
+      blend_time = ATTO3_OVERRIDE_RISE_S if blend_target > self.atto3_override_blend else ATTO3_OVERRIDE_FALL_S
+      step = STEER_DT / blend_time
+      self.atto3_override_blend += float(np.clip(blend_target - self.atto3_override_blend, -step, step))
+      desired_deg += self.atto3_override_blend * (meas_deg - desired_deg)
+    after_lowpass = lowpass_1pole(desired_deg, self.last_apply_angle)
     after_std = apply_std_steer_angle_limits(
       after_lowpass,
       self.last_apply_angle,
