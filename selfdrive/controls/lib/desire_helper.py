@@ -12,6 +12,11 @@ LaneChangeDirection = log.LaneChangeDirection
 LANE_CHANGE_SPEED_MIN = 20 * CV.MPH_TO_MS
 LANE_CHANGE_TIME_MAX = 10.
 ALC_CANCEL_DELAY = 1.75 # In seconds
+# Nudgeless lane change: starts from the blinker alone once it has been held this long with the
+# blind spot clear and no driver torque. Fires once per blinker activation so a held blinker
+# cannot chain lane changes. The higher speed gate keeps it out of turn signals at junctions.
+NUDGELESS_DELAY_S = 1.5
+NUDGELESS_MIN_SPEED = 60 * CV.KPH_TO_MS
 
 DESIRES = {
   LaneChangeDirection.none: {
@@ -51,6 +56,8 @@ class DesireHelper:
     self.last_alc_cancel = 0
     self.is_alc_enabled = Params().get_bool("IsAlcEnabled")
     self.blinker_below_lane_change_speed = False
+    self.nudgeless_timer = 0.0
+    self.nudgeless_used = False
 
   @staticmethod
   def get_lane_change_direction(CS):
@@ -89,6 +96,9 @@ class DesireHelper:
                            (rightBlinker and self.prev_blinker == Dir.LEFT))
 
     ready_for_lane_change = lateral_active and self.is_alc_enabled and self.lane_change_timer <= LANE_CHANGE_TIME_MAX and not carstate.lkaDisabled
+
+    if not one_blinker or blinker_dir_changed:
+      self.nudgeless_used = False
 
     if one_blinker and self.prev_blinker is None:
       self.blinker_below_lane_change_speed = below_lane_change_speed # Check if blinker was on below lane change speed
@@ -132,10 +142,18 @@ class DesireHelper:
                          (((steering_torque := carstate.steeringTorque) > 0 and self.lane_change_direction == LaneChangeDirection.left) or
                           (steering_torque < 0 and self.lane_change_direction == LaneChangeDirection.right))
 
+        # Any driver torque, a car in the blind spot or low speed restarts the wait.
+        if blindspot_detected or carstate.steeringPressed or carstate.vEgo < NUDGELESS_MIN_SPEED or blinker_dir_changed:
+          self.nudgeless_timer = 0.0
+        else:
+          self.nudgeless_timer += DT_MDL
+        nudgeless_ready = self.nudgeless_timer >= NUDGELESS_DELAY_S and not self.nudgeless_used
+
         if not can_start_lane_change:
           self.lane_change_state = LaneChangeState.off
-        elif torque_applied and not blindspot_detected:
+        elif (torque_applied or nudgeless_ready) and not blindspot_detected:
           self.lane_change_state = LaneChangeState.laneChangeStarting
+          self.nudgeless_used = True
 
       # LaneChangeState.laneChangeStarting
       elif self.lane_change_state == LaneChangeState.laneChangeStarting:
@@ -154,6 +172,9 @@ class DesireHelper:
         if self.lane_change_ll_prob > 0.99:
           self.lane_change_direction = LaneChangeDirection.none
           self.lane_change_state = LaneChangeState.preLaneChange if can_start_lane_change else LaneChangeState.off
+
+    if self.lane_change_state != LaneChangeState.preLaneChange:
+      self.nudgeless_timer = 0.0
 
     if self.lane_change_state in (LaneChangeState.off, LaneChangeState.preLaneChange):
       self.lane_change_timer = 0.0
