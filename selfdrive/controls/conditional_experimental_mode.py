@@ -113,6 +113,9 @@ class ConditionalExperimentalMode:
       if (personality_type == 0):
         if not self.cem_enabled:
           should_enable = False
+        else:
+          # Aggressive had no stop detection: a stopped car or red light with no lead never engaged it.
+          should_enable |= model_stopping_detected and v_ego < TURN_OFF_CEM_SPEED
       elif (personality_type == 1):
         should_enable |= model_stopping_detected
       else:
