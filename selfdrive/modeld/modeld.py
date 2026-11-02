@@ -75,6 +75,11 @@ def _use_rknn_driving() -> bool:
 # NOT TESTABLE OFFLINE on the car's real model -- suite.py is longitudinal.
 LAT_SMOOTH_SECONDS = 0.2
 LONG_SMOOTH_SECONDS = 0.3
+# Added to the curvature lookahead with NO matching filter, so it actually anticipates the
+# corner. LAT_SMOOTH_SECONDS cannot do this: its filter lag cancels its own lookahead.
+# Ideal corner-entry replay (bukapilot_sim/lateral/lookahead_net.py): reaches 50% of the corner
+# about 0.3 s earlier, peak curvature on entry +8..12%. Too much here cuts the inside of corners.
+LAT_LOOKAHEAD_EXTRA_SECONDS = 0.3
 MIN_LAT_CONTROL_SPEED = 0.3
 
 DRIVE_PATH_OFFSET_LIMIT_M = 0.25
@@ -696,7 +701,7 @@ def main(demo=False):
     is_rhd = sm["driverMonitoringState"].isRHD
     frame_id = sm["roadCameraState"].frameId
     v_ego = max(sm["carState"].vEgo, 0.)
-    lat_delay = sm["liveDelay"].lateralDelay + LAT_SMOOTH_SECONDS
+    lat_delay = sm["liveDelay"].lateralDelay + LAT_SMOOTH_SECONDS + LAT_LOOKAHEAD_EXTRA_SECONDS
     if sm.updated["liveCalibration"] and sm.seen['roadCameraState'] and sm.seen['deviceState']:
       device_from_calib_euler = np.array(sm["liveCalibration"].rpyCalib, dtype=np.float32)
       dc = DEVICE_CAMERAS[(str(sm['deviceState'].deviceType), str(sm['roadCameraState'].sensor))]
