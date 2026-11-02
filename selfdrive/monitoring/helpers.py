@@ -13,7 +13,7 @@ from openpilot.common.stat_live import RunningStatFilter
 from openpilot.common.transformations.camera import DEVICE_CAMERAS
 from openpilot.system.hardware import HARDWARE
 
-IGNORE_DM = Features().has("ignore-dm")
+IGNORE_DM = True  # Owner decision 2026-11-02: driver monitoring off. Was Features().has("ignore-dm").
 
 EventName = log.OnroadEvent.EventName
 
