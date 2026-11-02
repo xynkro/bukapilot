@@ -14,9 +14,9 @@ LANE_CHANGE_TIME_MAX = 10.
 ALC_CANCEL_DELAY = 1.75 # In seconds
 # Nudgeless lane change: starts from the blinker alone once it has been held this long with the
 # blind spot clear and no driver torque. Fires once per blinker activation so a held blinker
-# cannot chain lane changes. LANE_CHANGE_SPEED_MIN (32 km/h) still applies, so the real floor is 32 km/h.
+# cannot chain lane changes. The higher speed gate keeps it out of turn signals at junctions.
 NUDGELESS_DELAY_S = 1.5
-NUDGELESS_MIN_SPEED = 30 * CV.KPH_TO_MS
+NUDGELESS_MIN_SPEED = 60 * CV.KPH_TO_MS
 
 DESIRES = {
   LaneChangeDirection.none: {
