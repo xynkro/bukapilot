@@ -64,27 +64,16 @@ def _use_rknn_driving() -> bool:
     return False
   return os.getenv('USE_RKNN', '1') != '0'
 
-# 0.15, not stock's 0.0. Set 2026-11-02 for LATE CORNER TURN-IN.
-# This constant does TWO things, and the second is the reason for the change:
-#   1. smooths desiredCurvature  -- smooth_value(..., LAT_SMOOTH_SECONDS)
-#   2. EXTENDS THE CURVATURE LOOKAHEAD -- lat_delay = liveDelay.lateralDelay + this
-# The command comes from the model's predicted heading action_t ahead, via
-# drive_helpers.curv_from_psis:  curv = 2*(psi_target/(v*action_t)) - psi_rate/v
-# On a steady corner that is exact. ENTERING a corner, where curvature rises ahead,
-# a longer action_t samples more of the turn and commands more curvature EARLIER;
-# a short one turns in late and under-turns, which puts the car wide.
-# At 0.0 the lookahead was ONLY the learned actuation delay, 0.417 s measured on this
-# car, with zero anticipation on top -- while LONGITUDINAL already gets 0.3 s here.
-#   0.0  -> 0.417 s lookahead
-#   0.15 -> 0.567 s  (+36% anticipation)   <- this commit
-#   0.30 -> 0.717 s  (+72%), = the longitudinal precedent
-# Smoothing cost is negligible for the measured 0.22 Hz weave: a first-order filter
-# attenuates by 1/sqrt(1+(2*pi*f*tau)^2), so tau=0.15 removes ~2% of it. This is NOT
-# a weave fix and must not be sold as one.
-# Risk the other way: too much lookahead turns in early and cuts corners. At 25 m/s,
-# 0.567 s is ~14 m ahead.
-# NOT TESTABLE OFFLINE -- suite.py is longitudinal and does not exercise this.
-LAT_SMOOTH_SECONDS = 0.15
+# 0.2, not stock's 0.0. 0.15 was driven 2026-11-02 for late corner turn-in: "little change".
+# This constant does two things that cancel, which is what that drive felt:
+#   1. lookahead:  lat_delay = liveDelay.lateralDelay + this  (commands the curve EARLIER by tau)
+#   2. smoothing:  smooth_value(desired_curvature, ..., this)  (a first-order filter delays a
+#      ramp by exactly tau, so the command arrives LATER by tau)
+# Stock pairs them on purpose: the lookahead pays back the filter's lag. Net anticipation is ~0.
+# Replayed on an ideal corner entry (bukapilot_sim/lateral/lookahead_net.py), time to 50% of
+# the corner relative to 0.0:  0.15 -> -14..-23 ms   0.20 -> -1..-15 ms   0.30 -> 0..-19 ms
+# NOT TESTABLE OFFLINE on the car's real model -- suite.py is longitudinal.
+LAT_SMOOTH_SECONDS = 0.2
 LONG_SMOOTH_SECONDS = 0.3
 MIN_LAT_CONTROL_SPEED = 0.3
 
