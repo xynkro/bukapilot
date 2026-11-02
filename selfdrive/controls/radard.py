@@ -58,7 +58,8 @@ class Track:
     self.K_K = kalman_params.K
     self.kf = KF1D([[v_lead], [0.0]], self.K_A, self.K_C, self.K_K)
 
-  def update(self, d_rel: float, y_rel: float, v_rel: float, v_lead: float, measured: float):
+  def update(self, d_rel: float, y_rel: float, v_rel: float, v_lead: float, measured: float,
+             a_lead_meas: float | None = None):
     # relative values, copy
     self.dRel = d_rel   # LONG_DIST
     self.yRel = y_rel   # -LAT_DIST
@@ -73,8 +74,86 @@ class Track:
     self.vLeadK = float(self.kf.x[SPEED][0])
     self.aLeadK = float(self.kf.x[ACCEL][0])
 
-    # Learn if constant acceleration
-    if abs(self.aLeadK) < 0.5:
+    # The BYD radar MEASURES lead acceleration directly (ALEAD, 0.01 m/s^2), already
+    # plausibility-gated and low-passed in radar_interface. The Kalman above has to build
+    # its accel estimate up from successive velocity samples, so it lags worst exactly when
+    # acceleration is changing fastest -- a lead braking hard.
+    #
+    # Blend CONSERVATIVELY: take whichever indicates MORE deceleration. A bad/garbage ALEAD
+    # can then only ever make us more cautious about a braking lead, never less. If the
+    # measurement is spurious-positive it is simply ignored by the min().
+    # Only DECELERATION measurements are honoured. capnp floats default to 0.0 rather than
+    # NaN, so an unpopulated aRel would otherwise read as "lead accel = 0" and clamp away a
+    # genuinely accelerating lead, making us follow sluggishly. Gating on < 0 means this can
+    # only ever ADD braking sensitivity, never remove acceleration responsiveness.
+    # DEADBAND: only honour the measurement for GENUINE hard braking.
+    #
+    # Just below, aLeadTau collapses to 0 whenever |aLeadK| >= 0.5, which tells the MPC to
+    # project the lead's deceleration as PERMANENT (a_lead_traj = a_lead * exp(-tau*t^2/2)).
+    # Letting a mild measured lift (say -0.8) win the min() therefore flipped the MPC into
+    # "this lead is coming to a stop" and produced heavy braking where a light lift was all
+    # that was needed. The Kalman handles gentle decel perfectly well and keeps tau high.
+    # So: use the measurement only when the lead is really braking, which is the case the
+    # Kalman is genuinely slow at.
+    # ALEAD-DIRECT, third application 2026-09-07 at Caspar's request. aLeadK is the
+    # radar's own measured ALEAD; the Kalman is kept only as the fallback when no
+    # measurement is available.
+    #
+    # THE CASE FOR (measured on the car, route 2026-09-03--06-14-37, 29839 engaged
+    # frames, regressed on the lead's true acceleration and on ego's own aEgo):
+    #     aLeadK (Kalman)  tracks lead +0.032   ego contamination +0.621
+    #     ALEAD  (radar)   tracks lead +0.280   ego contamination +0.147
+    #     a clean estimator would be  +1.000 / +0.000
+    # The Kalman is ~9x worse at tracking the lead and ~4x more contaminated by our own
+    # motion. corr(aLeadK, true lead accel) = 0.126 -- it is barely measuring the lead
+    # at all, and it was reporting -4.4 m/s^2 against a lead sitting at constant speed.
+    #
+    # THE CASE AGAINST, STILL UNRESOLVED: it fails the offline scenario suite.
+    # Controlled A/B, same plant, only this code changed:
+    #     with     33/37   cut-in -9.5 m, stop-and-go -0.9 m, morning commute -1.2 m
+    #     without  36/37   only the known plant.py stopping-queue artifact
+    # The sim feeds the TRUE lead acceleration as a_lead_meas, so this is NOT about
+    # ALEAD being an imperfect sensor -- even a perfect measurement collides there.
+    # Working hypothesis: the Kalman's LAG is load-bearing, holding aLeadK negative
+    # through the tail of a braking event and keeping the deceleration projection alive
+    # while the car is still closing. TESTED AND REFUTED as the mechanism: making the
+    # aLeadTau snap-back symmetric (aLeadTau.update(_LEAD_ACCEL_TAU) instead of the
+    # instant aLeadTau.x = ...) still gives 32/37. The real mechanism is unknown.
+    #
+    # ROAD EVIDENCE SO FAR: two drives with this ON, reported "seemed ok, not much
+    # change" -- no incident, but no felt benefit either. That is evidence against the
+    # sim's collision prediction, though not conclusive: the failing geometry is cut-in
+    # and stop-and-go and may simply not have been encountered. WATCH CUT-INS.
+    #
+    # NOTE: this does not change vision's role. Vision gates whether a lead EXISTS
+    # (lead_msg.prob > .5), and when radar has no track at all
+    # get_RadarState_from_vision supplies the lead outright, including
+    # "aLeadK": float(lead_msg.a[0]) -- the model's own lead-accel estimate. Both paths
+    # are identical with or without this.
+    if a_lead_meas is not None and math.isfinite(a_lead_meas):
+      self.aLeadK = float(a_lead_meas)
+
+    # Learn if constant acceleration.
+    #
+    # THRESHOLD RAISED 0.5 -> 1.0 (2026-09-02). Crossing this collapses aLeadTau to 0, which
+    # tells the MPC to project the lead's deceleration as PERMANENT
+    # (a_lead_traj = a_lead * exp(-aLeadTau * t^2 / 2)) -- so it must only fire when the lead
+    # is REALLY braking, not when it taps.
+    #
+    # Measured on the car (2026-09-02 route, 5935 lead frames matched against the BYD radar's
+    # own directly-measured ALEAD):
+    #   threshold 0.5 : 746 collapses, 401 of them SPURIOUS (radar measured the lead
+    #                   decelerating less than 0.5 m/s^2) -- 54% false-fire rate
+    #   threshold 1.0 : 352 collapses, 108 spurious -- 73% of the false fires removed
+    # and at 1.0, all 9 frames where the lead genuinely braked hard (ALEAD < -2.0) STILL
+    # collapse tau, plus 86% of moderate braking (-1.0..-2.0). At 2.0 that starts to fail
+    # (8 of 9), so 1.0 is the limit.
+    #
+    # Closed-loop through the MPC, threshold 0.5 vs 1.0: peak braking on a -0.8 tap softens
+    # -0.65 -> -0.53, while -2.5 / -3.0 / -5.0 / -8.0 lead braking is BYTE-IDENTICAL. The
+    # emergency response is untouched by construction: aLeadK itself is not modified, we
+    # simply stop reacting to values the radar says are not there.
+    if abs(self.aLeadK) < ALEAD_TAU_COLLAPSE_THRESHOLD:
       self.aLeadTau.x = _LEAD_ACCEL_TAU
     else:
       self.aLeadTau.update(0.0)
@@ -156,8 +235,30 @@ def get_RadarState_from_vision(lead_msg: capnp._DynamicStructReader, v_ego: floa
   }
 
 
+# How long a vision-CONFIRMED lead may be sustained on radar alone after vision drops it.
+# This does NOT let radar invent a lead: the track must already have been vision-confirmed and
+# must still be present in `tracks`, which RadarD rebuilds every frame -- so the hold ends the
+# instant radar stops seeing it. A gantry can never exploit this: it is never vision-confirmed.
+# Only trust the radar's directly-measured lead acceleration below this (i.e. real braking).
+# Above it the Kalman estimate is used, which avoids tripping the aLeadTau "permanent decel"
+# behaviour on mild lifts. See the note in Track.update().
+ALEAD_MEAS_MIN_DECEL = -1.5   # m/s^2
+# |aLeadK| at or above this collapses aLeadTau to 0. See the long note in Track.update().
+ALEAD_TAU_COLLAPSE_THRESHOLD = 1.0   # m/s^2  (stock openpilot: 0.5)
+
+LEAD_SUSTAIN_S = 10.0
+
+# A sustained lead has NO vision backing, so it must clear a TIGHTER lateral bar than a
+# vision-confirmed one. radar_interface only deletes a track beyond |yRel| > 2.4 m, which
+# leaves the 2.0-2.4 m band -- unambiguously the next lane -- eligible to be held for the
+# full sustain window. That is a false-lead path my original sustain did not close: before
+# it, such a lead was dropped the moment vision let go.
+SUSTAIN_YREL_MAX = 1.2   # m
+
+
 def get_lead(v_ego: float, ready: bool, tracks: dict[int, Track], lead_msg: capnp._DynamicStructReader,
-             model_v_ego: float, low_speed_override: bool = True) -> dict[str, Any]:
+             model_v_ego: float, low_speed_override: bool = True,
+             sustain: dict | None = None, now: float = 0.0) -> dict[str, Any]:
   # Determine leads, this is where the essential logic happens
   if len(tracks) > 0 and ready and lead_msg.prob > .5:
     track = match_vision_to_track(v_ego, lead_msg, tracks)
@@ -169,6 +270,26 @@ def get_lead(v_ego: float, ready: bool, tracks: dict[int, Track], lead_msg: capn
     lead_dict = track.get_RadarState(lead_msg.prob)
   elif (track is None) and ready and (lead_msg.prob > .5):
     lead_dict = get_RadarState_from_vision(lead_msg, v_ego, model_v_ego)
+
+  # *** RADAR SUSTAIN ***
+  # openpilot needs vision (lead_msg.prob > .5) to declare a lead at speed; radar alone cannot.
+  # When traffic ahead stops the model's lead probability can collapse, the lead vanishes, and
+  # the planner accelerates toward set speed into a forming queue. Let radar hold a lead that
+  # vision already agreed existed, briefly.
+  if sustain is not None:
+    if lead_dict['status'] and lead_dict.get('radar', False):
+      sustain['id'] = lead_dict.get('radarTrackId')
+      sustain['t'] = now
+    elif not lead_dict['status']:
+      tid = sustain.get('id')
+      held = (tid is not None and tid in tracks
+              and (now - sustain.get('t', 0.0)) < LEAD_SUSTAIN_S
+              and abs(tracks[tid].yRel) <= SUSTAIN_YREL_MAX)
+      if held:
+        lead_dict = tracks[tid].get_RadarState()
+        lead_dict['modelProb'] = 0.0     # honest: vision is not backing this right now
+      else:
+        sustain['id'] = None
 
   if low_speed_override:
     low_speed_tracks = [c for c in tracks.values() if c.potential_low_speed_lead(v_ego)]
@@ -190,6 +311,9 @@ class RadarD:
     self.kalman_params = KalmanParams(DT_MDL)
 
     self.v_ego = 0.0
+    self.a_ego = 0.0
+    self._sustain_one: dict = {}
+    self._sustain_two: dict = {}
     self.v_ego_hist = deque([0.0], maxlen=int(round(delay / DT_MDL))+1)
     self.last_v_ego_frame = -1
 
@@ -204,10 +328,11 @@ class RadarD:
 
     if sm.recv_frame['carState'] != self.last_v_ego_frame:
       self.v_ego = sm['carState'].vEgo
+      self.a_ego = sm['carState'].aEgo
       self.v_ego_hist.append(self.v_ego)
       self.last_v_ego_frame = sm.recv_frame['carState']
 
-    ar_pts = {pt.trackId: [pt.dRel, pt.yRel, pt.vRel, pt.measured] for pt in rr.points}
+    ar_pts = {pt.trackId: [pt.dRel, pt.yRel, pt.vRel, pt.measured, pt.aRel] for pt in rr.points}
 
     # *** remove missing points from meta data ***
     for ids in list(self.tracks.keys()):
@@ -221,10 +346,43 @@ class RadarD:
       # align v_ego by a fixed time to align it with the radar measurement
       v_lead = rpt[2] + self.v_ego_hist[0]
 
+      # Radar-measured lead accel. Do NOT add a_ego back.
+      #
+      # BUG FIXED 2026-09-03: this used to be `rpt[4] + self.a_ego`, on the
+      # assumption that radar_interface had subtracted a_ego to make aRel
+      # relative. It had not: byd/radar_interface._ego_speed_accel() returns
+      # `(v_ego, 0.0)` -- a_ego is hardcoded ZERO -- so `aRel = alead - a_ego`
+      # subtracts nothing while this line added the real aEgo back.
+      #
+      # Result was a positive feedback loop in the braking path: ego brakes ->
+      # a_lead_meas = ALEAD + aEgo goes below ALEAD_MEAS_MIN_DECEL purely from
+      # ego's own decel -> min() drags aLeadK down -> aLeadTau collapses to 0 ->
+      # MPC projects a PERMANENT lead stop -> commands more brake -> aEgo stays
+      # large -> loop sustains. Only engages once already braking hard, which is
+      # why it presented as a jam brake rather than a constant offset.
+      #
+      # Measured on route 2026-09-03--06-14-37 (9565 engaged frames):
+      #   aLeadK ~= 0.022*a_lead_true + 0.652*aEgo      (clean: 1.000 / 0.000)
+      #   corr(aLeadK, true lead accel) = 0.126
+      #   during hard braking (aEgo < -1.5, n=166):
+      #     aLeadK ~= 0.131*a_lead_true + 1.697*aEgo
+      #     mean aLeadK -3.05 vs true lead accel -0.77 (overstates by 2.28)
+      # Episode at t=395s: lead shed 10.2 km/h, ego shed 34.9 (3.4x), command
+      # saturated at ACCEL_MIN -3.50 for 1.5 s AFTER vRel went positive and the
+      # gap was growing, never below 27.2 m.
+      #
+      # Safe either way: if ALEAD is absolute (as VLEAD is, and as this file
+      # already treats it) this is simply correct. If it were relative, it reads
+      # POSITIVE while we brake, min() ignores it, and the blend goes inert --
+      # i.e. stock behaviour. No branch makes braking weaker than stock.
+      a_lead_meas = None
+      if len(rpt) > 4 and rpt[4] is not None and math.isfinite(rpt[4]):
+        a_lead_meas = rpt[4]
+
       # create the track if it doesn't exist or it's a new track
       if ids not in self.tracks:
         self.tracks[ids] = Track(ids, v_lead, self.kalman_params)
-      self.tracks[ids].update(rpt[0], rpt[1], rpt[2], v_lead, rpt[3])
+      self.tracks[ids].update(rpt[0], rpt[1], rpt[2], v_lead, rpt[3], a_lead_meas)
 
     # *** publish radarState ***
     self.radar_state_valid = sm.all_checks()
@@ -239,8 +397,10 @@ class RadarD:
       model_v_ego = self.v_ego
     leads_v3 = sm['modelV2'].leadsV3
     if len(leads_v3) > 1:
-      self.radar_state.leadOne = get_lead(self.v_ego, self.ready, self.tracks, leads_v3[0], model_v_ego, low_speed_override=True)
-      self.radar_state.leadTwo = get_lead(self.v_ego, self.ready, self.tracks, leads_v3[1], model_v_ego, low_speed_override=False)
+      self.radar_state.leadOne = get_lead(self.v_ego, self.ready, self.tracks, leads_v3[0], model_v_ego,
+                                          low_speed_override=True, sustain=self._sustain_one, now=self.current_time)
+      self.radar_state.leadTwo = get_lead(self.v_ego, self.ready, self.tracks, leads_v3[1], model_v_ego,
+                                          low_speed_override=False, sustain=self._sustain_two, now=self.current_time)
 
   def publish(self, pm: messaging.PubMaster):
     assert self.radar_state is not None
