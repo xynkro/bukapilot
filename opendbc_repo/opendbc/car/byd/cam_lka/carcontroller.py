@@ -15,7 +15,7 @@ from opendbc.car.byd.values import CarControllerParams
 from opendbc.car.interfaces import CarControllerBase
 from opendbc.car.lateral import apply_std_steer_angle_limits
 
-STEER_LOWPASS_HZ = 2
+STEER_LOWPASS_HZ = 4  # stock 2. Final command lag 80 ms -> 40 ms; raises nothing on the jerk/accel limits.
 STEER_DT = 0.02
 MAX_STEER_ANGLE_OFFSET_DEG = 10
 # Degrees: warn on HUD when command hits angle safety envelope (meas offset or global max).
